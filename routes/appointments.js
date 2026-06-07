@@ -334,14 +334,14 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       return error(res, '预约记录不存在', 404);
     }
     
-    if (contact_id !== undefined) {
+    if (contact_id !== undefined && contact_id !== null) {
       const contact = await get('SELECT id FROM contacts WHERE id = ?', [contact_id]);
       if (!contact) {
         return error(res, '联系人不存在', 400);
       }
     }
     
-    if (plot_id !== undefined) {
+    if (plot_id !== undefined && plot_id !== null) {
       const plot = await get('SELECT id FROM plots WHERE id = ?', [plot_id]);
       if (!plot) {
         return error(res, '墓位不存在', 400);
