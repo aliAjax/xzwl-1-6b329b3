@@ -33,16 +33,16 @@ const formatLog = (log) => {
 
 router.get('/', authenticate, operationLogQueryValidation, async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      pageSize = 10, 
-      resource_type = '', 
-      user_id = '', 
-      start_date = '', 
-      end_date = '', 
-      action = '',
-      keyword = ''
-    } = req.query;
+    const { page, pageSize, resource_type, user_id, start_date, end_date, action, keyword } = req.query;
+    
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const pageSizeNum = pageSize ? parseInt(pageSize, 10) : 10;
+    const resourceType = resource_type || '';
+    const userId = user_id || '';
+    const startDate = start_date || '';
+    const endDate = end_date || '';
+    const actionVal = action || '';
+    const keywordVal = keyword || '';
 
     let baseSql = `
       SELECT o.*, u.name as user_name, u.username
@@ -52,41 +52,41 @@ router.get('/', authenticate, operationLogQueryValidation, async (req, res) => {
     `;
     const params = [];
 
-    if (resource_type) {
+    if (resourceType) {
       baseSql += ' AND o.resource_type = ?';
-      params.push(resource_type);
+      params.push(resourceType);
     }
 
-    if (user_id) {
+    if (userId) {
       baseSql += ' AND o.user_id = ?';
-      params.push(user_id);
+      params.push(userId);
     }
 
-    if (action) {
+    if (actionVal) {
       baseSql += ' AND o.action = ?';
-      params.push(action);
+      params.push(actionVal);
     }
 
-    if (start_date) {
+    if (startDate) {
       baseSql += ' AND DATE(o.created_at) >= ?';
-      params.push(start_date);
+      params.push(startDate);
     }
 
-    if (end_date) {
+    if (endDate) {
       baseSql += ' AND DATE(o.created_at) <= ?';
-      params.push(end_date);
+      params.push(endDate);
     }
 
-    if (keyword) {
+    if (keywordVal) {
       baseSql += ' AND (o.summary LIKE ? OR u.name LIKE ? OR u.username LIKE ?)';
-      params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+      params.push(`%${keywordVal}%`, `%${keywordVal}%`, `%${keywordVal}%`);
     }
 
-    const result = await paginateQuery(baseSql, params, page, pageSize, 'o.created_at DESC, o.id DESC');
+    const result = await paginateQuery(baseSql, params, pageNum, pageSizeNum, 'o.created_at DESC, o.id DESC');
     
     const formattedData = result.data.map(formatLog);
     
-    paginate(res, formattedData, result.total, page, pageSize);
+    paginate(res, formattedData, result.total, pageNum, pageSizeNum);
   } catch (err) {
     error(res, err.message, 500);
   }
