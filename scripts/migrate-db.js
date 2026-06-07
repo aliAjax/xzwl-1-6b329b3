@@ -2,9 +2,9 @@ const moment = require('moment');
 const { db } = require('../models');
 const { run, get, all } = require('../utils/dbHelper');
 
-const migrate = async () => {
+const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {}) => {
   try {
-    console.log('开始数据库迁移...');
+    log('开始数据库迁移...');
 
     const checkColumn = (tableName, columnName) => {
       return new Promise((resolve, reject) => {
@@ -27,9 +27,9 @@ const migrate = async () => {
           else resolve();
         });
       });
-      console.log('已添加 payments.bill_type 字段');
+      log('已添加 payments.bill_type 字段');
     } else {
-      console.log('payments.bill_type 字段已存在，跳过');
+      log('payments.bill_type 字段已存在，跳过');
     }
 
     if (!hasBillYear) {
@@ -39,9 +39,9 @@ const migrate = async () => {
           else resolve();
         });
       });
-      console.log('已添加 payments.bill_year 字段');
+      log('已添加 payments.bill_year 字段');
     } else {
-      console.log('payments.bill_year 字段已存在，跳过');
+      log('payments.bill_year 字段已存在，跳过');
     }
 
     if (!hasBillBatchId) {
@@ -51,9 +51,9 @@ const migrate = async () => {
           else resolve();
         });
       });
-      console.log('已添加 payments.bill_batch_id 字段');
+      log('已添加 payments.bill_batch_id 字段');
     } else {
-      console.log('payments.bill_batch_id 字段已存在，跳过');
+      log('payments.bill_batch_id 字段已存在，跳过');
     }
 
     await new Promise((resolve, reject) => {
@@ -77,7 +77,7 @@ const migrate = async () => {
         else resolve();
       });
     });
-    console.log('bill_batches 表已就绪');
+    log('bill_batches 表已就绪');
 
     await new Promise((resolve, reject) => {
       db.run(`CREATE TABLE IF NOT EXISTS bill_batch_exceptions (
@@ -94,7 +94,7 @@ const migrate = async () => {
         else resolve();
       });
     });
-    console.log('bill_batch_exceptions 表已就绪');
+    log('bill_batch_exceptions 表已就绪');
 
     await new Promise((resolve, reject) => {
       db.run(`CREATE TABLE IF NOT EXISTS system_config (
@@ -108,7 +108,7 @@ const migrate = async () => {
         else resolve();
       });
     });
-    console.log('system_config 表已就绪');
+    log('system_config 表已就绪');
 
     const feeConfig = await get('SELECT config_key FROM system_config WHERE config_key = ?', ['default_annual_fee']);
     if (!feeConfig) {
@@ -116,15 +116,15 @@ const migrate = async () => {
         'INSERT INTO system_config (config_key, config_value, description) VALUES (?, ?, ?)',
         ['default_annual_fee', '200', '默认年度管理费标准（元/年）']
       );
-      console.log('已初始化默认年度管理费标准：200元/年');
+      log('已初始化默认年度管理费标准：200元/年');
     } else {
-      console.log('默认年度管理费配置已存在，跳过');
+      log('默认年度管理费配置已存在，跳过');
     }
 
     const nullBillTypeCount = await get('SELECT COUNT(*) as count FROM payments WHERE bill_type IS NULL');
     if (nullBillTypeCount.count > 0) {
       await run("UPDATE payments SET bill_type = 'manual' WHERE bill_type IS NULL");
-      console.log(`已更新 ${nullBillTypeCount.count} 条历史缴费记录的 bill_type 为 manual`);
+      log(`已更新 ${nullBillTypeCount.count} 条历史缴费记录的 bill_type 为 manual`);
     }
 
     const nullBillYearRecords = await all(`
@@ -147,21 +147,30 @@ const migrate = async () => {
           updatedCount++;
         }
       }
-      console.log(`已为 ${updatedCount} 条历史缴费记录补充 bill_year（根据 start_date/due_date 推断）`);
+      log(`已为 ${updatedCount} 条历史缴费记录补充 bill_year（根据 start_date/due_date 推断）`);
     }
 
     const stillNullBillYearCount = await get('SELECT COUNT(*) as count FROM payments WHERE bill_year IS NULL');
     if (stillNullBillYearCount.count > 0) {
-      console.log(`注意：仍有 ${stillNullBillYearCount.count} 条记录 bill_year 为空（无 start_date 和 due_date），需手工处理`);
+      log(`注意：仍有 ${stillNullBillYearCount.count} 条记录 bill_year 为空（无 start_date 和 due_date），需手工处理`);
     }
 
-    console.log('');
-    console.log('数据库迁移完成！');
-    process.exit(0);
+    log('');
+    log('数据库迁移完成！');
+    if (exitOnComplete) {
+      process.exit(0);
+    }
   } catch (err) {
     console.error('迁移失败:', err);
-    process.exit(1);
+    if (exitOnComplete) {
+      process.exit(1);
+    }
+    throw err;
   }
 };
 
-migrate();
+if (require.main === module) {
+  migrateDatabase({ exitOnComplete: true });
+}
+
+module.exports = { migrateDatabase };

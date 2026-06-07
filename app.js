@@ -3,6 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 
 const { createTables } = require('./models');
+const { migrateDatabase } = require('./scripts/migrate-db');
 const { error } = require('./utils/response');
 
 const authRoutes = require('./routes/auth');
@@ -66,6 +67,7 @@ const startServer = async () => {
   try {
     await createTables();
     console.log('数据库表初始化完成');
+    await migrateDatabase();
     
     app.listen(PORT, () => {
       console.log(`服务器运行在 http://localhost:${PORT}`);
