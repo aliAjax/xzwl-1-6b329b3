@@ -7,7 +7,8 @@ const RESOURCE_TYPES = {
   CONTACT: 'contact',
   PAYMENT: 'payment',
   APPOINTMENT: 'appointment',
-  VISIT_RECORD: 'visit_record'
+  VISIT_RECORD: 'visit_record',
+  BILL_BATCH: 'bill_batch'
 };
 
 const ACTIONS = {
@@ -47,7 +48,8 @@ const generateSummary = (resourceType, action, data, oldData = null) => {
     contact: '联系人',
     payment: '缴费',
     appointment: '预约',
-    visit_record: '沟通记录'
+    visit_record: '沟通记录',
+    bill_batch: '账单批次'
   };
 
   const actionNames = {

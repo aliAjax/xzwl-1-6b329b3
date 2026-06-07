@@ -63,17 +63,17 @@ const seed = async () => {
     console.log('联系人数据导入完成');
     
     const paymentData = [
-      { plot_id: 1, contact_id: 1, amount: 200, payment_date: moment().subtract(1, 'year').format('YYYY-MM-DD'), start_date: moment().subtract(1, 'year').format('YYYY-MM-DD'), due_date: moment().add(11, 'months').format('YYYY-MM-DD'), status: '已缴', payment_method: '现金' },
-      { plot_id: 2, contact_id: 2, amount: 200, payment_date: moment().subtract(6, 'months').format('YYYY-MM-DD'), start_date: moment().subtract(6, 'months').format('YYYY-MM-DD'), due_date: moment().add(6, 'months').format('YYYY-MM-DD'), status: '已缴', payment_method: '微信' },
-      { plot_id: 6, contact_id: 3, amount: 200, payment_date: moment().subtract(1, 'month').format('YYYY-MM-DD'), start_date: moment().subtract(1, 'month').format('YYYY-MM-DD'), due_date: moment().add(11, 'months').format('YYYY-MM-DD'), status: '已缴', payment_method: '支付宝' },
-      { plot_id: 11, contact_id: 4, amount: 200, payment_date: null, start_date: moment().format('YYYY-MM-DD'), due_date: moment().add(15, 'days').format('YYYY-MM-DD'), status: '未缴', payment_method: null },
-      { plot_id: 16, contact_id: 5, amount: 200, payment_date: null, start_date: moment().subtract(2, 'months').format('YYYY-MM-DD'), due_date: moment().subtract(5, 'days').format('YYYY-MM-DD'), status: '未缴', payment_method: null }
+      { plot_id: 1, contact_id: 1, amount: 200, payment_date: moment().subtract(1, 'year').format('YYYY-MM-DD'), start_date: moment().subtract(1, 'year').format('YYYY-MM-DD'), due_date: moment().add(11, 'months').format('YYYY-MM-DD'), status: '已缴', payment_method: '现金', bill_type: 'manual', bill_year: moment().subtract(1, 'year').year() },
+      { plot_id: 2, contact_id: 2, amount: 200, payment_date: moment().subtract(6, 'months').format('YYYY-MM-DD'), start_date: moment().subtract(6, 'months').format('YYYY-MM-DD'), due_date: moment().add(6, 'months').format('YYYY-MM-DD'), status: '已缴', payment_method: '微信', bill_type: 'manual', bill_year: moment().year() },
+      { plot_id: 6, contact_id: 3, amount: 200, payment_date: moment().subtract(1, 'month').format('YYYY-MM-DD'), start_date: moment().subtract(1, 'month').format('YYYY-MM-DD'), due_date: moment().add(11, 'months').format('YYYY-MM-DD'), status: '已缴', payment_method: '支付宝', bill_type: 'manual', bill_year: moment().year() },
+      { plot_id: 11, contact_id: 4, amount: 200, payment_date: null, start_date: moment().format('YYYY-MM-DD'), due_date: moment().add(15, 'days').format('YYYY-MM-DD'), status: '未缴', payment_method: null, bill_type: 'manual', bill_year: moment().year() },
+      { plot_id: 16, contact_id: 5, amount: 200, payment_date: null, start_date: moment().subtract(2, 'months').format('YYYY-MM-DD'), due_date: moment().subtract(5, 'days').format('YYYY-MM-DD'), status: '未缴', payment_method: null, bill_type: 'manual', bill_year: moment().year() }
     ];
     
     for (const p of paymentData) {
       await run(
-        'INSERT INTO payments (plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [p.plot_id, p.contact_id, p.amount, p.payment_date, p.start_date, p.due_date, p.status, p.payment_method]
+        'INSERT INTO payments (plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, bill_type, bill_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [p.plot_id, p.contact_id, p.amount, p.payment_date, p.start_date, p.due_date, p.status, p.payment_method, p.bill_type, p.bill_year]
       );
     }
     console.log('缴费数据导入完成');

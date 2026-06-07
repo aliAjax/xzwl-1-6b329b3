@@ -65,9 +65,49 @@ const createTables = () => {
         status TEXT DEFAULT '未缴',
         payment_method TEXT,
         remark TEXT,
+        bill_type TEXT DEFAULT 'manual',
+        bill_year INTEGER,
+        bill_batch_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (plot_id) REFERENCES plots(id),
-        FOREIGN KEY (contact_id) REFERENCES contacts(id)
+        FOREIGN KEY (contact_id) REFERENCES contacts(id),
+        FOREIGN KEY (bill_batch_id) REFERENCES bill_batches(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS bill_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_no TEXT UNIQUE NOT NULL,
+        bill_year INTEGER NOT NULL,
+        fee_standard REAL NOT NULL,
+        total_count INTEGER DEFAULT 0,
+        success_count INTEGER DEFAULT 0,
+        skip_count INTEGER DEFAULT 0,
+        error_count INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'processing',
+        operator_id INTEGER NOT NULL,
+        operator_name TEXT NOT NULL,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (operator_id) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS bill_batch_exceptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER NOT NULL,
+        plot_id INTEGER,
+        plot_number TEXT,
+        error_type TEXT NOT NULL,
+        error_message TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (batch_id) REFERENCES bill_batches(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS system_config (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        config_key TEXT UNIQUE NOT NULL,
+        config_value TEXT,
+        description TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )`);
 
       db.run(`CREATE TABLE IF NOT EXISTS appointments (

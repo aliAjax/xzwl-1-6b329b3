@@ -7,7 +7,8 @@
     "start": "node app.js",
     "dev": "nodemon app.js",
     "init": "node scripts/init-db.js",
-    "seed": "node scripts/seed-data.js"
+    "seed": "node scripts/seed-data.js",
+    "migrate": "node scripts/migrate-db.js"
   },
   "dependencies": {
     "express": "^4.18.2",

@@ -262,7 +262,7 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
 
 router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
   try {
-    const { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark } = req.body;
+    const { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year } = req.body;
     
     const plot = await get('SELECT id FROM plots WHERE id = ?', [plot_id]);
     if (!plot) {
@@ -277,8 +277,8 @@ router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
     }
     
     const result = await run(
-      'INSERT INTO payments (plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [plot_id, contact_id, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark]
+      'INSERT INTO payments (plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [plot_id, contact_id, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark, bill_type || 'manual', bill_year]
     );
 
     const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.CREATE, req.body);
@@ -321,7 +321,7 @@ router.post('/:id/pay', authenticate, idParamValidation, async (req, res) => {
 router.put('/:id', authenticate, idParamValidation, async (req, res) => {
   try {
     const { id } = req.params;
-    const { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark } = req.body;
+    const { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year } = req.body;
     
     const existing = await get('SELECT * FROM payments WHERE id = ?', [id]);
     if (!existing) {
@@ -336,11 +336,11 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     }
     
     await run(
-      'UPDATE payments SET plot_id = ?, contact_id = ?, amount = ?, payment_date = ?, start_date = ?, due_date = ?, status = ?, payment_method = ?, remark = ? WHERE id = ?',
-      [plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, id]
+      'UPDATE payments SET plot_id = ?, contact_id = ?, amount = ?, payment_date = ?, start_date = ?, due_date = ?, status = ?, payment_method = ?, remark = ?, bill_type = COALESCE(?, bill_type), bill_year = COALESCE(?, bill_year) WHERE id = ?',
+      [plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year, id]
     );
 
-    const newData = { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark };
+    const newData = { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year };
     let action = ACTIONS.UPDATE;
     let summary;
 

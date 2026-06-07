@@ -105,6 +105,36 @@ const operationLogQueryValidation = [
   validate
 ];
 
+const billPreviewValidation = [
+  body('bill_year').isInt({ min: 2000, max: 2100 }).withMessage('账单年度无效，范围2000-2100'),
+  body('fee_standard').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('收费标准无效'),
+  body('area').optional({ checkFalsy: true }).notEmpty().withMessage('区域不能为空'),
+  body('plot_ids').optional({ checkFalsy: true }).isArray().withMessage('墓位ID列表必须是数组'),
+  validate
+];
+
+const billGenerateValidation = [
+  body('bill_year').isInt({ min: 2000, max: 2100 }).withMessage('账单年度无效，范围2000-2100'),
+  body('fee_standard').isFloat({ min: 0 }).withMessage('收费标准无效'),
+  body('area').optional({ checkFalsy: true }).notEmpty().withMessage('区域不能为空'),
+  body('plot_ids').optional({ checkFalsy: true }).isArray().withMessage('墓位ID列表必须是数组'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const billBatchQueryValidation = [
+  query('bill_year').optional({ checkFalsy: true }).isInt({ min: 2000, max: 2100 }).withMessage('账单年度无效'),
+  query('status').optional({ checkFalsy: true }).isIn(['processing', 'completed', 'failed']).withMessage('状态无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
+const billConfigUpdateValidation = [
+  body('default_annual_fee').isFloat({ min: 0 }).withMessage('默认年度管理费无效'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -120,5 +150,9 @@ module.exports = {
   idParamValidation,
   importPreviewValidation,
   importConfirmValidation,
-  operationLogQueryValidation
+  operationLogQueryValidation,
+  billPreviewValidation,
+  billGenerateValidation,
+  billBatchQueryValidation,
+  billConfigUpdateValidation
 };
