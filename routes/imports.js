@@ -197,8 +197,18 @@ router.post('/preview', authenticate, importPreviewValidation, async (req, res) 
     const importableCount = validItems.length;
 
     const duplicateItems = validationResults.filter(r => 
-      r.errors.some(e => e.includes('导入批次中重复'))
-    );
+      r.errors.some(e => e.includes('导入批次中重复') || e.includes('已存在'))
+    ).map(r => {
+      const batchDuplicates = r.errors.filter(e => e.includes('导入批次中重复'));
+      const dbDuplicates = r.errors.filter(e => e.includes('已存在'));
+      return {
+        index: r.index,
+        data: r.data,
+        duplicate_type: batchDuplicates.length > 0 && dbDuplicates.length > 0 ? 'both' :
+                       batchDuplicates.length > 0 ? 'batch' : 'database',
+        errors: r.errors
+      };
+    });
 
     const errorDetails = invalidItems.map(r => ({
       index: r.index,
@@ -227,7 +237,10 @@ router.post('/preview', authenticate, importPreviewValidation, async (req, res) 
       } else {
         const requiredFields = ['name', 'phone'];
         requiredFields.forEach(field => {
-          if (r.errors.some(e => e.includes(field === 'name' ? '姓名' : '电话'))) {
+          const hasError = field === 'name' 
+            ? r.errors.some(e => e.includes('姓名'))
+            : r.errors.some(e => e.includes('电话') || e.includes('手机号'));
+          if (hasError) {
             fieldValidation.invalidFields++;
           } else {
             fieldValidation.validFields++;
@@ -250,6 +263,86 @@ router.post('/preview', authenticate, importPreviewValidation, async (req, res) 
       importCache.delete(importToken);
     }, CACHE_TTL);
 
+    const duplicateSummary = {
+      batch: duplicateItems.filter(d => d.duplicate_type === 'batch' || d.duplicate_type === 'both').length,
+      database: duplicateItems.filter(d => d.duplicate_type === 'database' || d.duplicate_type === 'both').length,
+      both: duplicateItems.filter(d => d.duplicate_type === 'both').length
+    };
+
+    const fieldErrorBreakdown = {};
+    if (type === 'plot') {
+      fieldErrorBreakdown.plot_number = {
+        total: validationResults.filter(r => 
+          r.errors.some(e => e.includes('墓位编号'))
+        ).length,
+        empty: validationResults.filter(r => 
+          r.errors.some(e => e.includes('墓位编号不能为空'))
+        ).length,
+        batch_duplicate: validationResults.filter(r => 
+          r.errors.some(e => e.includes('墓位编号') && e.includes('导入批次中重复'))
+        ).length,
+        database_duplicate: validationResults.filter(r => 
+          r.errors.some(e => e.includes('墓位编号') && e.includes('已存在'))
+        ).length
+      };
+      fieldErrorBreakdown.position = {
+        total: validationResults.filter(r => 
+          r.errors.some(e => e.includes('区域') || e.includes('排号') || e.includes('列号') || e.includes('位置'))
+        ).length,
+        area_empty: validationResults.filter(r => 
+          r.errors.some(e => e.includes('区域不能为空'))
+        ).length,
+        row_invalid: validationResults.filter(r => 
+          r.errors.some(e => e.includes('排号'))
+        ).length,
+        col_invalid: validationResults.filter(r => 
+          r.errors.some(e => e.includes('列号'))
+        ).length,
+        batch_duplicate: validationResults.filter(r => 
+          r.errors.some(e => e.includes('位置') && e.includes('导入批次中重复'))
+        ).length,
+        database_duplicate: validationResults.filter(r => 
+          r.errors.some(e => e.includes('位置') && e.includes('已存在'))
+        ).length
+      };
+      fieldErrorBreakdown.status = validationResults.filter(r => 
+        r.errors.some(e => e.includes('状态'))
+      ).length;
+      fieldErrorBreakdown.type = validationResults.filter(r => 
+        r.errors.some(e => e.includes('类型'))
+      ).length;
+      fieldErrorBreakdown.price = validationResults.filter(r => 
+        r.errors.some(e => e.includes('价格'))
+      ).length;
+    } else {
+      fieldErrorBreakdown.name = validationResults.filter(r => 
+        r.errors.some(e => e.includes('姓名'))
+      ).length;
+      fieldErrorBreakdown.phone = {
+        total: validationResults.filter(r => 
+          r.errors.some(e => e.includes('电话') || e.includes('手机号'))
+        ).length,
+        empty: validationResults.filter(r => 
+          r.errors.some(e => e.includes('联系电话不能为空'))
+        ).length,
+        format: validationResults.filter(r => 
+          r.errors.some(e => e.includes('联系电话格式不正确'))
+        ).length,
+        batch_duplicate: validationResults.filter(r => 
+          r.errors.some(e => e.includes('手机号') && e.includes('导入批次中重复'))
+        ).length,
+        database_duplicate: validationResults.filter(r => 
+          r.errors.some(e => e.includes('手机号') && e.includes('已存在'))
+        ).length
+      };
+      fieldErrorBreakdown.deceased_id = validationResults.filter(r => 
+        r.errors.some(e => e.includes('关联逝者ID'))
+      ).length;
+      fieldErrorBreakdown.id_card = validationResults.filter(r => 
+        r.errors.some(e => e.includes('身份证号'))
+      ).length;
+    }
+
     success(res, {
       import_token: importToken,
       type,
@@ -257,13 +350,11 @@ router.post('/preview', authenticate, importPreviewValidation, async (req, res) 
       importable_count: importableCount,
       invalid_count: invalidItems.length,
       duplicate_count: duplicateItems.length,
+      duplicate_summary: duplicateSummary,
       field_validation: fieldValidation,
+      field_error_breakdown: fieldErrorBreakdown,
       error_details: errorDetails,
-      duplicate_items: duplicateItems.map(r => ({
-        index: r.index,
-        data: r.data,
-        errors: r.errors
-      })),
+      duplicate_items: duplicateItems,
       preview: validItems.map(r => r.data)
     }, '数据预览校验完成');
   } catch (err) {
