@@ -33,11 +33,11 @@ const findLastPaymentForPlot = async (plotId) => {
 
 const checkExistingBill = async (plotId, billYear) => {
   const existing = await get(`
-    SELECT id FROM payments 
-    WHERE plot_id = ? AND bill_year = ? AND bill_type = 'system'
+    SELECT id, bill_type FROM payments 
+    WHERE plot_id = ? AND bill_year = ?
     LIMIT 1
   `, [plotId, billYear]);
-  return !!existing;
+  return existing ? { exists: true, bill_type: existing.bill_type } : { exists: false, bill_type: null };
 };
 
 const generateBatchNo = () => {
@@ -101,11 +101,12 @@ const processPlotForBill = async (plot, billYear, feeStandard) => {
     return result;
   }
 
-  const isDuplicate = await checkExistingBill(plot.id, billYear);
-  if (isDuplicate) {
+  const duplicateCheck = await checkExistingBill(plot.id, billYear);
+  if (duplicateCheck.exists) {
     result.is_duplicate = true;
     result.error_type = ERROR_TYPES.DUPLICATE_BILL;
-    result.error_message = `${billYear}年度账单已存在，跳过生成`;
+    const billTypeDesc = duplicateCheck.bill_type === 'manual' ? '手工录入' : '系统生成';
+    result.error_message = `${billYear}年度账单已存在（${billTypeDesc}），跳过生成`;
     return result;
   }
 

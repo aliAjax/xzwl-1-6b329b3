@@ -276,9 +276,31 @@ router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
       }
     }
     
+    let finalBillYear = bill_year;
+    if (!finalBillYear) {
+      if (start_date) {
+        finalBillYear = moment(start_date).year();
+      } else if (due_date) {
+        finalBillYear = moment(due_date).year();
+      }
+    }
+    
+    if (finalBillYear) {
+      const existingBill = await get(`
+        SELECT id, bill_type FROM payments 
+        WHERE plot_id = ? AND bill_year = ?
+        LIMIT 1
+      `, [plot_id, finalBillYear]);
+      
+      if (existingBill) {
+        const typeDesc = existingBill.bill_type === 'manual' ? '手工录入' : '系统生成';
+        return error(res, `${finalBillYear}年度已存在${typeDesc}的缴费记录，请勿重复录入`, 400);
+      }
+    }
+    
     const result = await run(
       'INSERT INTO payments (plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [plot_id, contact_id, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark, bill_type || 'manual', bill_year]
+      [plot_id, contact_id, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark, bill_type || 'manual', finalBillYear]
     );
 
     const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.CREATE, req.body);

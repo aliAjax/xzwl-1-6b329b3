@@ -1,6 +1,6 @@
 const moment = require('moment');
 const { db } = require('../models');
-const { run, get } = require('../utils/dbHelper');
+const { run, get, all } = require('../utils/dbHelper');
 
 const migrate = async () => {
   try {
@@ -125,6 +125,34 @@ const migrate = async () => {
     if (nullBillTypeCount.count > 0) {
       await run("UPDATE payments SET bill_type = 'manual' WHERE bill_type IS NULL");
       console.log(`已更新 ${nullBillTypeCount.count} 条历史缴费记录的 bill_type 为 manual`);
+    }
+
+    const nullBillYearRecords = await all(`
+      SELECT id, start_date, due_date FROM payments 
+      WHERE bill_year IS NULL AND (start_date IS NOT NULL OR due_date IS NOT NULL)
+    `);
+    
+    if (nullBillYearRecords.length > 0) {
+      let updatedCount = 0;
+      for (const record of nullBillYearRecords) {
+        let billYear = null;
+        if (record.start_date) {
+          billYear = moment(record.start_date).year();
+        } else if (record.due_date) {
+          billYear = moment(record.due_date).year();
+        }
+        
+        if (billYear) {
+          await run('UPDATE payments SET bill_year = ? WHERE id = ?', [billYear, record.id]);
+          updatedCount++;
+        }
+      }
+      console.log(`已为 ${updatedCount} 条历史缴费记录补充 bill_year（根据 start_date/due_date 推断）`);
+    }
+
+    const stillNullBillYearCount = await get('SELECT COUNT(*) as count FROM payments WHERE bill_year IS NULL');
+    if (stillNullBillYearCount.count > 0) {
+      console.log(`注意：仍有 ${stillNullBillYearCount.count} 条记录 bill_year 为空（无 start_date 和 due_date），需手工处理`);
     }
 
     console.log('');
