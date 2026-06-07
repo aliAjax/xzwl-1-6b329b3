@@ -98,6 +98,45 @@ const createTables = () => {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (contact_id) REFERENCES contacts(id),
         FOREIGN KEY (user_id) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS service_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        price REAL NOT NULL DEFAULT 0,
+        unit TEXT DEFAULT '次',
+        description TEXT,
+        status TEXT DEFAULT '上架',
+        sort INTEGER DEFAULT 0,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS service_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_no TEXT UNIQUE NOT NULL,
+        service_item_id INTEGER NOT NULL,
+        contact_id INTEGER,
+        plot_id INTEGER,
+        appointment_id INTEGER,
+        contact_name TEXT,
+        contact_phone TEXT,
+        service_date TEXT,
+        service_time TEXT,
+        quantity INTEGER DEFAULT 1,
+        unit_price REAL DEFAULT 0,
+        total_amount REAL DEFAULT 0,
+        status TEXT DEFAULT '待处理',
+        operator_id INTEGER,
+        remark TEXT,
+        completed_at TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (service_item_id) REFERENCES service_items(id),
+        FOREIGN KEY (contact_id) REFERENCES contacts(id),
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (appointment_id) REFERENCES appointments(id),
+        FOREIGN KEY (operator_id) REFERENCES users(id)
       )`, (err) => {
         if (err) reject(err);
         else resolve();

@@ -65,6 +65,24 @@ const idParamValidation = [
   validate
 ];
 
+const serviceItemCreateValidation = [
+  body('name').notEmpty().withMessage('服务名称不能为空'),
+  body('category').notEmpty().withMessage('服务分类不能为空'),
+  body('price').isFloat({ min: 0 }).withMessage('价格无效'),
+  validate
+];
+
+const serviceOrderCreateValidation = [
+  body('service_item_id').isInt().withMessage('服务项目ID无效'),
+  body('quantity').isInt({ min: 1 }).withMessage('数量无效'),
+  validate
+];
+
+const serviceOrderStatusValidation = [
+  body('status').isIn(['待处理', '处理中', '已完成', '已取消']).withMessage('状态无效'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -74,5 +92,8 @@ module.exports = {
   paymentCreateValidation,
   appointmentCreateValidation,
   visitRecordCreateValidation,
+  serviceItemCreateValidation,
+  serviceOrderCreateValidation,
+  serviceOrderStatusValidation,
   idParamValidation
 };

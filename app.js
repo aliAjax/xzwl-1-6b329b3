@@ -14,6 +14,8 @@ const paymentRoutes = require('./routes/payments');
 const appointmentRoutes = require('./routes/appointments');
 const visitRecordRoutes = require('./routes/visitRecords');
 const dashboardRoutes = require('./routes/dashboard');
+const serviceItemRoutes = require('./routes/serviceItems');
+const serviceOrderRoutes = require('./routes/serviceOrders');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -31,6 +33,8 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/visit-records', visitRecordRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/service-items', serviceItemRoutes);
+app.use('/api/service-orders', serviceOrderRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({
