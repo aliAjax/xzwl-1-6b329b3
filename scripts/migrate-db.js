@@ -405,6 +405,7 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
       log(`发现 ${existingDeceasedWithPlot.length} 条历史逝者占用墓位数据，正在创建兼容合同...`);
       
       let createdCount = 0;
+      let linkedPaymentCount = 0;
       for (const item of existingDeceasedWithPlot) {
         try {
           const existingContract = await get(`
@@ -418,7 +419,32 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
           
           const contractNo = `HTLS${moment(item.deceased_created_at || moment()).format('YYYYMMDD')}${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
           const plotPrice = item.plot_price || 0;
-          const totalAmount = plotPrice;
+          
+          const existingPayments = await all(`
+            SELECT id, amount, fee_category, status, payment_date
+            FROM payments 
+            WHERE plot_id = ? 
+              AND contract_id IS NULL
+              AND status = '已缴'
+            ORDER BY payment_date ASC
+          `, [item.plot_id]);
+          
+          let totalPaid = 0;
+          let plotPayment = 0;
+          let feePayment = 0;
+          
+          for (const payment of existingPayments) {
+            const category = payment.fee_category || '管理费';
+            if (category === '购墓款') {
+              plotPayment += payment.amount;
+            } else {
+              feePayment += payment.amount;
+            }
+            totalPaid += payment.amount;
+          }
+          
+          const finalPlotPrice = Math.max(plotPrice, plotPayment);
+          const totalAmount = finalPlotPrice + feePayment;
           
           const contractResult = await run(`
             INSERT INTO contracts (
@@ -427,26 +453,38 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
               signed_at, effective_at,
               remark, created_by, created_by_name,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'effective', ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, 'effective', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `, [
             contractNo, item.plot_id, item.contact_id, item.deceased_id,
-            plotPrice, totalAmount, totalAmount,
+            finalPlotPrice, feePayment, feePayment > 0 ? Math.ceil(feePayment / 100) : 0, totalAmount, totalPaid,
             item.deceased_created_at, item.deceased_created_at,
             '历史数据兼容-自动生成合同', 1, '系统',
             item.deceased_created_at, item.deceased_created_at
           ]);
           
-          if (plotPrice > 0) {
+          if (finalPlotPrice > 0) {
             await run(`
               INSERT INTO contract_fee_items (contract_id, fee_type, fee_category, amount, description)
               VALUES (?, '墓位款', '购墓款', ?, '历史墓位购买费用')
-            `, [contractResult.id, plotPrice]);
+            `, [contractResult.id, finalPlotPrice]);
+          }
+          
+          if (feePayment > 0) {
+            await run(`
+              INSERT INTO contract_fee_items (contract_id, fee_type, fee_category, amount, quantity, unit_price, description)
+              VALUES (?, '管理费', '管理费', ?, ?, ?, '历史管理费')
+            `, [contractResult.id, feePayment, feePayment > 0 ? Math.ceil(feePayment / 100) : 1, feePayment > 0 ? 100 : 0]);
+          }
+          
+          for (const payment of existingPayments) {
+            await run('UPDATE payments SET contract_id = ? WHERE id = ?', [contractResult.id, payment.id]);
+            linkedPaymentCount++;
           }
           
           await run(`
             INSERT INTO contract_status_logs (contract_id, from_status, to_status, operator_id, operator_name, remark, created_at)
             VALUES (?, 'draft', 'effective', ?, '系统', ?, ?)
-          `, [contractResult.id, 1, '历史数据兼容-直接生效', item.deceased_created_at]);
+          `, [contractResult.id, 1, `历史数据兼容-直接生效，已关联${existingPayments.length}条历史付款记录`, item.deceased_created_at]);
           
           createdCount++;
         } catch (e) {
@@ -454,9 +492,58 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
         }
       }
       
-      log(`已为 ${createdCount} 条历史数据创建兼容合同`);
+      log(`已为 ${createdCount} 条历史数据创建兼容合同，关联 ${linkedPaymentCount} 条历史付款记录`);
     } else {
       log('无需要处理的历史逝者占用墓位数据');
+    }
+    
+    const unlinkedEffectiveContracts = await all(`
+      SELECT c.id, c.plot_id, c.paid_amount, c.total_amount
+      FROM contracts c
+      WHERE c.status = 'effective'
+        AND c.paid_amount = 0
+        AND c.id NOT IN (SELECT DISTINCT contract_id FROM payments WHERE contract_id IS NOT NULL)
+    `);
+    
+    if (unlinkedEffectiveContracts.length > 0) {
+      log(`发现 ${unlinkedEffectiveContracts.length} 个已生效合同没有关联付款记录，正在检查历史付款...`);
+      
+      let updatedCount = 0;
+      for (const contract of unlinkedEffectiveContracts) {
+        try {
+          const existingPayments = await all(`
+            SELECT id, amount, fee_category, status
+            FROM payments 
+            WHERE plot_id = ? 
+              AND contract_id IS NULL
+              AND status = '已缴'
+            ORDER BY payment_date ASC
+          `, [contract.plot_id]);
+          
+          if (existingPayments.length > 0) {
+            let totalPaid = 0;
+            for (const payment of existingPayments) {
+              await run('UPDATE payments SET contract_id = ? WHERE id = ?', [contract.id, payment.id]);
+              totalPaid += payment.amount;
+            }
+            
+            if (totalPaid > 0) {
+              await run(`
+                UPDATE contracts SET 
+                  paid_amount = ?,
+                  updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `, [totalPaid, contract.id]);
+            }
+            
+            updatedCount++;
+          }
+        } catch (e) {
+          log(`关联付款记录时出错（合同ID: ${contract.id}）:`, e.message);
+        }
+      }
+      
+      log(`已为 ${updatedCount} 个合同关联历史付款记录`);
     }
 
     const existingPaymentsWithoutCategory = await get('SELECT COUNT(*) as count FROM payments WHERE fee_category IS NULL OR fee_category = ?', ['管理费']);

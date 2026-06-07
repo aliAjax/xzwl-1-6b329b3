@@ -1,7 +1,7 @@
 const express = require('express');
 const moment = require('moment');
-const { run, get, all, paginateQuery } = require('../utils/dbHelper');
-const { success, error, paginate } = require('../utils/response');
+const { run, get, all, paginateQuery, runInTransaction } = require('../utils/dbHelper');
+const { success, error, paginate, handleError } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { paymentCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
@@ -45,7 +45,7 @@ router.get('/', authenticate, async (req, res) => {
     const result = await paginateQuery(baseSql, params, page, pageSize, 'py.due_date ASC');
     paginate(res, result.data, result.total, page, pageSize);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -111,7 +111,7 @@ router.get('/reminders', authenticate, async (req, res) => {
       }
     }, '到期提醒查询成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -165,7 +165,7 @@ router.get('/overdue', authenticate, async (req, res) => {
       }
     }, '逾期费用查询成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -230,7 +230,7 @@ router.get('/statistics', authenticate, async (req, res) => {
       monthly: monthlyData
     }, '缴费统计查询成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -256,13 +256,13 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
     
     success(res, payment);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
 router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
   try {
-    const { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year } = req.body;
+    const { plot_id, contact_id, contract_id, fee_category, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year } = req.body;
     
     const plot = await get('SELECT id FROM plots WHERE id = ?', [plot_id]);
     if (!plot) {
@@ -276,6 +276,78 @@ router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
       }
     }
     
+    let finalContractId = contract_id;
+    let finalFeeCategory = fee_category || '管理费';
+    
+    if (!finalContractId) {
+      const activeContract = await get(`
+        SELECT id, status, contact_id as contract_contact_id, total_amount, paid_amount
+        FROM contracts 
+        WHERE plot_id = ? 
+          AND status IN ('signed', 'effective')
+          AND (contact_id IS NULL OR contact_id = COALESCE(?, contact_id))
+        ORDER BY 
+          CASE status WHEN 'effective' THEN 1 WHEN 'signed' THEN 2 ELSE 3 END,
+          created_at DESC
+        LIMIT 1
+      `, [plot_id, contact_id]);
+      
+      if (activeContract) {
+        finalContractId = activeContract.id;
+        if (activeContract.contract_contact_id && !contact_id) {
+          req.body.contact_id = activeContract.contract_contact_id;
+        }
+      }
+    }
+    
+    if (finalContractId && status === '已缴') {
+      const contract = await get('SELECT id, status, total_amount, paid_amount FROM contracts WHERE id = ?', [finalContractId]);
+      if (contract && contract.status !== 'voided') {
+        const newPaidAmount = contract.paid_amount + amount;
+        
+        await run(`
+          UPDATE contracts SET 
+            paid_amount = ?,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `, [newPaidAmount, finalContractId]);
+        
+        if (newPaidAmount >= contract.total_amount && contract.status === 'signed') {
+          const { run, get } = require('../utils/dbHelper');
+          const effectiveAt = moment().format('YYYY-MM-DD HH:mm:ss');
+          
+          const contractDetail = await get(`
+            SELECT c.*, p.status as plot_status
+            FROM contracts c
+            LEFT JOIN plots p ON c.plot_id = p.id
+            WHERE c.id = ?
+          `, [finalContractId]);
+          
+          if (contractDetail) {
+            const occupyingDeceased = await get(`
+              SELECT id, name FROM deceased WHERE plot_id = ? AND id != COALESCE(?, 0) LIMIT 1
+            `, [contractDetail.plot_id, contractDetail.deceased_id]);
+            
+            if (!occupyingDeceased) {
+              await run(`
+                UPDATE contracts SET 
+                  status = 'effective', 
+                  effective_at = ?,
+                  updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `, [effectiveAt, finalContractId]);
+              
+              if (contractDetail.deceased_id) {
+                await run('UPDATE deceased SET plot_id = ? WHERE id = ?', [contractDetail.plot_id, contractDetail.deceased_id]);
+              }
+              
+              await run("UPDATE plots SET status = '已占用' WHERE id = ?", [contractDetail.plot_id]);
+            }
+          }
+        }
+      }
+    }
+    
     let finalBillYear = bill_year;
     if (!finalBillYear) {
       if (start_date) {
@@ -285,58 +357,117 @@ router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
       }
     }
     
-    if (finalBillYear) {
+    if (finalBillYear && finalFeeCategory === '管理费') {
       const existingBill = await get(`
         SELECT id, bill_type FROM payments 
-        WHERE plot_id = ? AND bill_year = ?
+        WHERE plot_id = ? AND bill_year = ? AND fee_category = '管理费'
         LIMIT 1
       `, [plot_id, finalBillYear]);
       
       if (existingBill) {
         const typeDesc = existingBill.bill_type === 'manual' ? '手工录入' : '系统生成';
-        return error(res, `${finalBillYear}年度已存在${typeDesc}的缴费记录，请勿重复录入`, 400);
+        return error(res, `${finalBillYear}年度已存在${typeDesc}的管理费缴费记录，请勿重复录入`, 400);
       }
     }
     
     const result = await run(
-      'INSERT INTO payments (plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [plot_id, contact_id, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark, bill_type || 'manual', finalBillYear]
+      'INSERT INTO payments (plot_id, contact_id, contract_id, fee_category, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [plot_id, req.body.contact_id || contact_id, finalContractId, finalFeeCategory, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark, bill_type || 'manual', finalBillYear]
     );
 
-    const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.CREATE, req.body);
+    const summaryData = { 
+      ...req.body, 
+      contract_id: finalContractId, 
+      fee_category: finalFeeCategory 
+    };
+    const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.CREATE, summaryData);
     await logOperation(req, RESOURCE_TYPES.PAYMENT, result.id, ACTIONS.CREATE, summary);
     
-    success(res, { id: result.id }, '缴费记录创建成功');
+    const message = finalContractId 
+      ? `缴费记录创建成功${status === '已缴' ? '，已同步更新合同付款信息' : ''}`
+      : '缴费记录创建成功';
+    
+    success(res, { id: result.id, contract_id: finalContractId, fee_category: finalFeeCategory }, message);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
 router.post('/:id/pay', authenticate, idParamValidation, async (req, res) => {
   try {
     const { id } = req.params;
-    const { payment_date, payment_method, amount, remark } = req.body;
+    const { payment_date, payment_method, amount, remark, fee_category } = req.body;
     
     const existing = await get('SELECT * FROM payments WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '缴费记录不存在', 404);
     }
     
+    if (existing.status === '已缴') {
+      return error(res, '该缴费记录已完成缴费，无需重复操作', 400);
+    }
+    
     const payAmount = amount || existing.amount;
     const payDate = payment_date || moment().format('YYYY-MM-DD');
+    const finalFeeCategory = fee_category || existing.fee_category || '管理费';
     
-    await run(
-      'UPDATE payments SET status = "已缴", payment_date = ?, payment_method = ?, amount = ?, remark = COALESCE(?, remark) WHERE id = ?',
-      [payDate, payment_method, payAmount, remark, id]
-    );
+    await runInTransaction(async () => {
+      await run(
+        'UPDATE payments SET status = "已缴", payment_date = ?, payment_method = ?, amount = ?, fee_category = COALESCE(?, fee_category), remark = COALESCE(?, remark) WHERE id = ?',
+        [payDate, payment_method, payAmount, finalFeeCategory, remark, id]
+      );
+      
+      if (existing.contract_id) {
+        const contract = await get('SELECT id, status, total_amount, paid_amount, plot_id, deceased_id FROM contracts WHERE id = ?', [existing.contract_id]);
+        if (contract && contract.status !== 'voided') {
+          const newPaidAmount = contract.paid_amount + payAmount;
+          
+          await run(`
+            UPDATE contracts SET 
+              paid_amount = ?,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `, [newPaidAmount, contract.id]);
+          
+          if (newPaidAmount >= contract.total_amount && contract.status === 'signed') {
+            const occupyingDeceased = await get(`
+              SELECT id, name FROM deceased WHERE plot_id = ? AND id != COALESCE(?, 0) LIMIT 1
+            `, [contract.plot_id, contract.deceased_id]);
+            
+            if (!occupyingDeceased) {
+              const effectiveAt = moment().format('YYYY-MM-DD HH:mm:ss');
+              
+              await run(`
+                UPDATE contracts SET 
+                  status = 'effective', 
+                  effective_at = ?,
+                  updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `, [effectiveAt, contract.id]);
+              
+              if (contract.deceased_id) {
+                await run('UPDATE deceased SET plot_id = ? WHERE id = ?', [contract.plot_id, contract.deceased_id]);
+              }
+              
+              await run("UPDATE plots SET status = '已占用' WHERE id = ?", [contract.plot_id]);
+            }
+          }
+        }
+      }
+    });
 
-    const newData = { status: '已缴', payment_date: payDate, payment_method, amount: payAmount };
+    const newData = { status: '已缴', payment_date: payDate, payment_method, amount: payAmount, fee_category: finalFeeCategory };
     const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.STATUS_CHANGE, newData, existing);
     await logOperation(req, RESOURCE_TYPES.PAYMENT, id, ACTIONS.STATUS_CHANGE, summary);
     
-    success(res, null, '缴费成功');
+    let message = '缴费成功';
+    if (existing.contract_id) {
+      message += '，已同步更新合同付款信息';
+    }
+    
+    success(res, null, message);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -376,7 +507,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     
     success(res, null, '缴费记录更新成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -396,7 +527,7 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
     
     success(res, null, '缴费记录删除成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 

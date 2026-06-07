@@ -3,7 +3,7 @@ import requests
 import json
 import time
 
-BASE_URL = 'http://localhost:3001'
+BASE_URL = 'http://localhost:8080'
 TIMESTAMP = str(int(time.time()))
 
 def login(username, password):

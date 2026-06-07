@@ -1,7 +1,7 @@
 const express = require('express');
 const moment = require('moment');
 const { run, get, all, paginateQuery, runInTransaction } = require('../utils/dbHelper');
-const { success, error, paginate } = require('../utils/response');
+const { success, error, paginate, handleError } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const {
   contractCreateValidation,
@@ -46,7 +46,7 @@ const generateContractNo = () => {
   return `HT${date}${random}`;
 };
 
-const checkPlotAvailability = async (plotId, excludeContractId = null) => {
+const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDeceasedId = null) => {
   const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
   if (!plot) {
     return { available: false, reason: '墓位不存在' };
@@ -56,15 +56,26 @@ const checkPlotAvailability = async (plotId, excludeContractId = null) => {
     return { available: false, reason: '墓位正在维修中' };
   }
 
-  if (plot.status === PLOT_STATUSES.OCCUPIED) {
-    const deceased = await get('SELECT id, name FROM deceased WHERE plot_id = ?', [plotId]);
-    if (deceased) {
-      return { available: false, reason: `墓位已被逝者"${deceased.name}"占用` };
-    }
+  const deceasedParams = excludeDeceasedId ? [plotId, excludeDeceasedId] : [plotId];
+  const occupyingDeceased = await get(`
+    SELECT id, name 
+    FROM deceased 
+    WHERE plot_id = ? 
+      ${excludeDeceasedId ? 'AND id != ?' : ''}
+    LIMIT 1
+  `, deceasedParams);
+  if (occupyingDeceased) {
+    return { 
+      available: false, 
+      reason: `墓位已被逝者"${occupyingDeceased.name}"占用`,
+      occupied_by: 'deceased',
+      occupant_id: occupyingDeceased.id,
+      occupant_name: occupyingDeceased.name
+    };
   }
 
   const activeReservation = await get(`
-    SELECT r.id, r.expires_at, c.contract_no
+    SELECT r.id, r.expires_at, c.contract_no, c.id as contract_id
     FROM plot_reservations r
     INNER JOIN contracts c ON r.contract_id = c.id
     WHERE r.plot_id = ? 
@@ -77,13 +88,16 @@ const checkPlotAvailability = async (plotId, excludeContractId = null) => {
     if (moment(activeReservation.expires_at).isAfter(moment())) {
       return { 
         available: false, 
-        reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}` 
+        reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}`,
+        occupied_by: 'reservation',
+        contract_id: activeReservation.contract_id,
+        contract_no: activeReservation.contract_no
       };
     }
   }
 
   const activeContract = await get(`
-    SELECT id, contract_no, status
+    SELECT id, contract_no, status, deceased_id
     FROM contracts 
     WHERE plot_id = ? 
       AND status IN ('reserved', 'signed', 'effective')
@@ -92,9 +106,14 @@ const checkPlotAvailability = async (plotId, excludeContractId = null) => {
   `, excludeContractId ? [plotId, excludeContractId] : [plotId]);
 
   if (activeContract) {
+    const contractDeceased = activeContract.deceased_id ? await get('SELECT name FROM deceased WHERE id = ?', [activeContract.deceased_id]) : null;
     return { 
       available: false, 
-      reason: `墓位已关联${STATUS_NAMES[activeContract.status]}合同${activeContract.contract_no}` 
+      reason: `墓位已关联${STATUS_NAMES[activeContract.status]}合同${activeContract.contract_no}${contractDeceased ? `，关联逝者：${contractDeceased.name}` : ''}`,
+      occupied_by: 'contract',
+      contract_id: activeContract.id,
+      contract_no: activeContract.contract_no,
+      contract_status: activeContract.status
     };
   }
 
@@ -155,6 +174,24 @@ const checkAndReleaseExpiredReservations = async (plotId) => {
   }
 };
 
+const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = null, excludeDeceasedId = null) => {
+  await run('BEGIN IMMEDIATE');
+  
+  try {
+    const lockedPlot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
+    if (!lockedPlot) {
+      await run('ROLLBACK');
+      return { available: false, reason: '墓位不存在' };
+    }
+    
+    const availability = await checkPlotAvailability(plotId, excludeContractId, excludeDeceasedId);
+    return { ...availability, _locked: true };
+  } catch (err) {
+    await run('ROLLBACK');
+    throw err;
+  }
+};
+
 router.get('/check-plot-availability', authenticate, async (req, res) => {
   try {
     const { plot_id } = req.query;
@@ -168,7 +205,7 @@ router.get('/check-plot-availability', authenticate, async (req, res) => {
     
     success(res, result);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -236,7 +273,7 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
 
     paginate(res, dataWithStatusNames, result.total, page, pageSize);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -342,7 +379,7 @@ router.get('/statistics', authenticate, async (req, res) => {
       }
     }, '合同统计查询成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -425,7 +462,7 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
       reservation
     }, '合同详情查询成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -452,27 +489,90 @@ router.post('/', authenticate, contractCreateValidation, async (req, res) => {
     const createdBy = req.user?.id;
     const createdByName = req.user?.name || '未知';
 
-    const result = await run(`
-      INSERT INTO contracts (
-        contract_no, plot_id, contact_id, deceased_id, status,
-        plot_price, management_fee, management_fee_years, total_amount,
-        remark, created_by, created_by_name
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      contractNo, plot_id, contact_id, deceased_id, CONTRACT_STATUSES.DRAFT,
-      finalPlotPrice, finalManagementFee, finalManagementFeeYears, totalAmount,
-      remark, createdBy, createdByName
-    ]);
+    const result = await runInTransaction(async () => {
+      const contractResult = await run(`
+        INSERT INTO contracts (
+          contract_no, plot_id, contact_id, deceased_id, status,
+          plot_price, management_fee, management_fee_years, total_amount,
+          remark, created_by, created_by_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        contractNo, plot_id, contact_id, deceased_id, CONTRACT_STATUSES.DRAFT,
+        finalPlotPrice, finalManagementFee, finalManagementFeeYears, totalAmount,
+        remark, createdBy, createdByName
+      ]);
+
+      const existingPayments = await all(`
+        SELECT id, amount, fee_category, status, payment_date
+        FROM payments 
+        WHERE plot_id = ? 
+          AND contract_id IS NULL
+          AND status = '已缴'
+        ORDER BY payment_date ASC
+      `, [plot_id]);
+
+      let linkedPaymentCount = 0;
+      let linkedPaymentAmount = 0;
+      let linkedPlotPayment = 0;
+      let linkedFeePayment = 0;
+
+      for (const payment of existingPayments) {
+        const category = payment.fee_category || '管理费';
+        let shouldLink = false;
+        
+        if (category === '购墓款' && finalPlotPrice > 0) {
+          shouldLink = true;
+          linkedPlotPayment += payment.amount;
+        } else if (category === '管理费' && finalManagementFee > 0) {
+          shouldLink = true;
+          linkedFeePayment += payment.amount;
+        } else if (!payment.fee_category && finalManagementFee > 0) {
+          shouldLink = true;
+          linkedFeePayment += payment.amount;
+        }
+        
+        if (shouldLink) {
+          await run('UPDATE payments SET contract_id = ? WHERE id = ?', [contractResult.id, payment.id]);
+          linkedPaymentCount++;
+          linkedPaymentAmount += payment.amount;
+        }
+      }
+
+      if (linkedPaymentCount > 0) {
+        await run(`
+          UPDATE contracts SET 
+            paid_amount = ?,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `, [linkedPaymentAmount, contractResult.id]);
+      }
+
+      return {
+        id: contractResult.id,
+        contract_no: contractNo,
+        linked_payments: {
+          count: linkedPaymentCount,
+          total_amount: linkedPaymentAmount,
+          plot_payment: linkedPlotPayment,
+          fee_payment: linkedFeePayment
+        }
+      };
+    });
 
     const summary = generateSummary(RESOURCE_TYPES.CONTRACT, ACTIONS.CREATE, { 
       contract_no: contractNo, 
-      plot_id 
+      plot_id,
+      linked_payments: result.linked_payments
     });
     await logOperation(req, RESOURCE_TYPES.CONTRACT, result.id, ACTIONS.CREATE, summary);
 
-    success(res, { id: result.id, contract_no: contractNo }, '合同草稿创建成功');
+    const message = result.linked_payments.count > 0 
+      ? `合同草稿创建成功，已自动关联${result.linked_payments.count}条历史付款记录，共计${result.linked_payments.total_amount}元`
+      : '合同草稿创建成功';
+
+    success(res, { id: result.id, contract_no: result.contract_no, linked_payments: result.linked_payments }, message);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -484,12 +584,12 @@ router.post('/reserve', authenticate, contractReserveValidation, async (req, res
     } = req.body;
 
     await checkAndReleaseExpiredReservations(plot_id);
-    const availability = await checkPlotAvailability(plot_id);
-    if (!availability.available) {
-      return error(res, availability.reason, 400);
-    }
 
     const result = await runInTransaction(async () => {
+      const lockCheck = await checkPlotAvailability(plot_id);
+      if (!lockCheck.available) {
+        throw new Error(lockCheck.reason);
+      }
       const plot = await get('SELECT id, plot_number, price FROM plots WHERE id = ?', [plot_id]);
       const finalPlotPrice = plot_price !== undefined ? plot_price : (plot.price || 0);
       const finalManagementFee = management_fee || 0;
@@ -536,7 +636,7 @@ router.post('/reserve', authenticate, contractReserveValidation, async (req, res
 
     success(res, result, '墓位预留成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -600,7 +700,7 @@ router.put('/:id', authenticate, idParamValidation, contractUpdateValidation, as
 
     success(res, null, '合同更新成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -622,11 +722,6 @@ router.post('/:id/sign', authenticate, idParamValidation, contractSignValidation
       return error(res, '已生效或已作废的合同不能签约', 400);
     }
 
-    const availability = await checkPlotAvailability(existing.plot_id, id);
-    if (!availability.available) {
-      return error(res, availability.reason, 400);
-    }
-
     if (deceased_id) {
       const deceased = await get('SELECT id, plot_id FROM deceased WHERE id = ?', [deceased_id]);
       if (!deceased) {
@@ -638,6 +733,30 @@ router.post('/:id/sign', authenticate, idParamValidation, contractSignValidation
     }
 
     const result = await runInTransaction(async () => {
+      const availability = await checkPlotAvailability(existing.plot_id, id, deceased_id);
+      if (!availability.available) {
+        throw new Error(availability.reason);
+      }
+
+      if (deceased_id) {
+        const otherDeceased = await get(`
+          SELECT id, name FROM deceased 
+          WHERE plot_id = ? AND id != ?
+          LIMIT 1
+        `, [existing.plot_id, deceased_id]);
+        if (otherDeceased) {
+          throw new Error(`墓位已被逝者"${otherDeceased.name}"占用，不能重复签约`);
+        }
+      } else {
+        const anyDeceased = await get(`
+          SELECT id, name FROM deceased 
+          WHERE plot_id = ?
+          LIMIT 1
+        `, [existing.plot_id]);
+        if (anyDeceased) {
+          throw new Error(`墓位已被逝者"${anyDeceased.name}"占用，不能重复签约`);
+        }
+      }
       const finalManagementFee = management_fee !== undefined ? management_fee : existing.management_fee;
       const finalManagementFeeYears = management_fee_years !== undefined ? management_fee_years : existing.management_fee_years;
       const totalAmount = plot_price + finalManagementFee;
@@ -705,7 +824,7 @@ router.post('/:id/sign', authenticate, idParamValidation, contractSignValidation
 
     success(res, result, '合同签约成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -757,6 +876,31 @@ router.post('/:id/pay', authenticate, idParamValidation, contractPayValidation, 
       let becameEffective = false;
       let effectiveAt = null;
       if (newPaidAmount >= existing.total_amount && existing.status !== CONTRACT_STATUSES.EFFECTIVE) {
+        const finalCheck = await checkPlotAvailability(existing.plot_id, id, existing.deceased_id);
+        if (!finalCheck.available) {
+          throw new Error(`合同无法生效：${finalCheck.reason}`);
+        }
+
+        if (existing.deceased_id) {
+          const otherOccupant = await get(`
+            SELECT id, name FROM deceased 
+            WHERE plot_id = ? AND id != ?
+            LIMIT 1
+          `, [existing.plot_id, existing.deceased_id]);
+          if (otherOccupant) {
+            throw new Error(`墓位已被逝者"${otherOccupant.name}"占用，合同无法生效`);
+          }
+        } else {
+          const anyOccupant = await get(`
+            SELECT id, name FROM deceased 
+            WHERE plot_id = ?
+            LIMIT 1
+          `, [existing.plot_id]);
+          if (anyOccupant) {
+            throw new Error(`墓位已被逝者"${anyOccupant.name}"占用，合同无法生效`);
+          }
+        }
+
         effectiveAt = moment().format('YYYY-MM-DD HH:mm:ss');
         
         await run(`
@@ -795,7 +939,7 @@ router.post('/:id/pay', authenticate, idParamValidation, contractPayValidation, 
 
     success(res, result, message);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -863,7 +1007,7 @@ router.post('/:id/void', authenticate, idParamValidation, contractVoidValidation
 
     success(res, null, '合同作废成功，墓位已释放');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -908,7 +1052,7 @@ router.post('/:id/renew-reservation', authenticate, idParamValidation, async (re
 
     success(res, { new_expires_at: newExpiresAt }, '预留续期成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -954,7 +1098,7 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
 
     success(res, null, '合同删除成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 

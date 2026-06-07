@@ -1,13 +1,37 @@
 const express = require('express');
-const { run, get, paginateQuery, all } = require('../utils/dbHelper');
-const { success, error, paginate } = require('../utils/response');
+const { run, get, paginateQuery, all, runInTransaction } = require('../utils/dbHelper');
+const { success, error, paginate, handleError } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { deceasedCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
 
-const checkPlotReservation = async (plotId) => {
+const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null) => {
+  const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
+  if (!plot) {
+    return { available: false, reason: '墓位不存在' };
+  }
+
+  if (plot.status === '维修中') {
+    return { available: false, reason: '墓位正在维修中' };
+  }
+
+  const params = excludeDeceasedId ? [plotId, excludeDeceasedId] : [plotId];
+  const occupyingDeceased = await get(`
+    SELECT id, name 
+    FROM deceased 
+    WHERE plot_id = ? 
+      ${excludeDeceasedId ? 'AND id != ?' : ''}
+    LIMIT 1
+  `, params);
+  if (occupyingDeceased) {
+    return { 
+      available: false, 
+      reason: `墓位已被逝者"${occupyingDeceased.name}"占用` 
+    };
+  }
+
   const activeReservation = await get(`
     SELECT r.id, r.expires_at, c.contract_no
     FROM plot_reservations r
@@ -19,12 +43,12 @@ const checkPlotReservation = async (plotId) => {
     LIMIT 1
   `, [plotId]);
 
+  const moment = require('moment');
   if (activeReservation) {
-    const moment = require('moment');
     if (moment(activeReservation.expires_at).isAfter(moment())) {
       return { 
-        reserved: true, 
-        reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}` 
+        available: false, 
+        reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}，请先通过合同流程处理` 
       };
     }
   }
@@ -40,12 +64,12 @@ const checkPlotReservation = async (plotId) => {
   if (activeContract) {
     const statusNames = { reserved: '预留中', signed: '已签约' };
     return { 
-      reserved: true, 
-      reason: `墓位已关联${statusNames[activeContract.status]}合同${activeContract.contract_no}` 
+      available: false, 
+      reason: `墓位已关联${statusNames[activeContract.status]}合同${activeContract.contract_no}，请先通过合同流程处理` 
     };
   }
 
-  return { reserved: false };
+  return { available: true, plot };
 };
 
 router.get('/', authenticate, async (req, res) => {
@@ -78,7 +102,7 @@ router.get('/', authenticate, async (req, res) => {
     const result = await paginateQuery(baseSql, params, page, pageSize);
     paginate(res, result.data, result.total, page, pageSize);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -106,7 +130,7 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
     
     success(res, deceased);
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -114,37 +138,57 @@ router.post('/', authenticate, deceasedCreateValidation, async (req, res) => {
   try {
     const { name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark } = req.body;
     
-    if (plot_id) {
-      const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plot_id]);
-      if (!plot) {
-        return error(res, '墓位不存在', 400);
+    const result = await runInTransaction(async () => {
+      let deceasedId;
+      
+      if (plot_id) {
+        const availability = await checkPlotAvailabilityForDeceased(plot_id);
+        if (!availability.available) {
+          throw new Error(availability.reason);
+        }
+        
+        const otherOccupant = await get(`
+          SELECT id, name FROM deceased 
+          WHERE plot_id = ?
+          LIMIT 1
+        `, [plot_id]);
+        if (otherOccupant) {
+          throw new Error(`墓位已被逝者"${otherOccupant.name}"占用，不能重复占用`);
+        }
+        
+        const activeContract = await get(`
+          SELECT c.id, c.contract_no, c.status, c.deceased_id
+          FROM contracts c
+          WHERE c.plot_id = ? 
+            AND c.status IN ('signed', 'effective')
+            AND c.deceased_id IS NOT NULL
+          LIMIT 1
+        `, [plot_id]);
+        if (activeContract && activeContract.deceased_id) {
+          const statusNames = { signed: '已签约', effective: '已生效' };
+          const contractDeceased = await get('SELECT name FROM deceased WHERE id = ?', [activeContract.deceased_id]);
+          throw new Error(`墓位已${statusNames[activeContract.status]}合同${activeContract.contract_no}关联逝者${contractDeceased ? `"${contractDeceased.name}"` : ''}，请先通过合同流程处理`);
+        }
       }
       
-      const reservation = await checkPlotReservation(plot_id);
-      if (reservation.reserved) {
-        return error(res, reservation.reason + '，请先通过合同流程处理', 400);
+      deceasedId = (await run(
+        'INSERT INTO deceased (name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark]
+      )).id;
+      
+      if (plot_id) {
+        await run('UPDATE plots SET status = "已占用" WHERE id = ?', [plot_id]);
       }
       
-      if (plot.status === '维修中') {
-        return error(res, '该墓位正在维修中，不能占用', 400);
-      }
-    }
-    
-    const result = await run(
-      'INSERT INTO deceased (name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark]
-    );
-    
-    if (plot_id) {
-      await run('UPDATE plots SET status = "已占用" WHERE id = ?', [plot_id]);
-    }
+      return deceasedId;
+    });
 
     const summary = generateSummary(RESOURCE_TYPES.DECEASED, ACTIONS.CREATE, req.body);
-    await logOperation(req, RESOURCE_TYPES.DECEASED, result.id, ACTIONS.CREATE, summary);
+    await logOperation(req, RESOURCE_TYPES.DECEASED, result, ACTIONS.CREATE, summary);
     
-    success(res, { id: result.id }, '逝者信息创建成功');
+    success(res, { id: result }, '逝者信息创建成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -158,35 +202,56 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       return error(res, '逝者信息不存在', 404);
     }
     
-    if (plot_id && plot_id !== existing.plot_id) {
-      const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plot_id]);
-      if (!plot) {
-        return error(res, '新墓位不存在', 400);
-      }
-      
-      const reservation = await checkPlotReservation(plot_id);
-      if (reservation.reserved) {
-        return error(res, reservation.reason + '，请先通过合同流程处理', 400);
-      }
-      
-      if (plot.status === '维修中') {
-        return error(res, '该墓位正在维修中，不能占用', 400);
-      }
-      
-      if (existing.plot_id) {
-        const hasOtherDeceased = await get('SELECT COUNT(*) as count FROM deceased WHERE plot_id = ? AND id != ?', [existing.plot_id, id]);
-        if (hasOtherDeceased.count === 0) {
-          await run('UPDATE plots SET status = "空闲" WHERE id = ?', [existing.plot_id]);
+    await runInTransaction(async () => {
+      if (plot_id !== undefined && plot_id !== existing.plot_id) {
+        if (plot_id !== null) {
+          const availability = await checkPlotAvailabilityForDeceased(plot_id, id);
+          if (!availability.available) {
+            throw new Error(availability.reason);
+          }
+          
+          const otherOccupant = await get(`
+            SELECT id, name FROM deceased 
+            WHERE plot_id = ? AND id != ?
+            LIMIT 1
+          `, [plot_id, id]);
+          if (otherOccupant) {
+            throw new Error(`墓位已被逝者"${otherOccupant.name}"占用，不能重复占用`);
+          }
+          
+          const activeContract = await get(`
+            SELECT c.id, c.contract_no, c.status, c.deceased_id
+            FROM contracts c
+            WHERE c.plot_id = ? 
+              AND c.status IN ('signed', 'effective')
+              AND c.deceased_id IS NOT NULL
+              AND c.deceased_id != ?
+            LIMIT 1
+          `, [plot_id, id]);
+          if (activeContract && activeContract.deceased_id) {
+            const statusNames = { signed: '已签约', effective: '已生效' };
+            const contractDeceased = await get('SELECT name FROM deceased WHERE id = ?', [activeContract.deceased_id]);
+            throw new Error(`墓位已${statusNames[activeContract.status]}合同${activeContract.contract_no}关联逝者${contractDeceased ? `"${contractDeceased.name}"` : ''}，请先通过合同流程处理`);
+          }
+        }
+        
+        if (existing.plot_id) {
+          const hasOtherDeceased = await get('SELECT COUNT(*) as count FROM deceased WHERE plot_id = ? AND id != ?', [existing.plot_id, id]);
+          if (hasOtherDeceased.count === 0) {
+            await run('UPDATE plots SET status = "空闲" WHERE id = ?', [existing.plot_id]);
+          }
+        }
+        
+        if (plot_id !== null) {
+          await run('UPDATE plots SET status = "已占用" WHERE id = ?', [plot_id]);
         }
       }
       
-      await run('UPDATE plots SET status = "已占用" WHERE id = ?', [plot_id]);
-    }
-    
-    await run(
-      'UPDATE deceased SET name = ?, gender = ?, birth_date = ?, death_date = ?, plot_id = ?, relationship = ?, interment_date = ?, remark = ? WHERE id = ?',
-      [name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark, id]
-    );
+      await run(
+        'UPDATE deceased SET name = ?, gender = ?, birth_date = ?, death_date = ?, plot_id = ?, relationship = ?, interment_date = ?, remark = ? WHERE id = ?',
+        [name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark, id]
+      );
+    });
 
     const newData = { name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark };
     const summary = generateSummary(RESOURCE_TYPES.DECEASED, ACTIONS.UPDATE, newData, existing);
@@ -194,7 +259,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     
     success(res, null, '逝者信息更新成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
@@ -221,7 +286,7 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
     
     success(res, null, '逝者信息删除成功');
   } catch (err) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 });
 
