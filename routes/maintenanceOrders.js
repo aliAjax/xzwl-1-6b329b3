@@ -191,13 +191,18 @@ router.post('/', authenticate, maintenanceOrderCreateValidation, async (req, res
       return error(res, '该墓位已有进行中的维修工单，请先完成或取消', 400);
     }
     
+    let handlerId = handler_id;
     let handlerName = null;
+    
     if (handler_id) {
       const handler = await get('SELECT name FROM users WHERE id = ?', [handler_id]);
       if (!handler) {
         return error(res, '处理人不存在', 404);
       }
       handlerName = handler.name;
+    } else {
+      handlerId = req.user.id;
+      handlerName = req.user.name;
     }
     
     const orderId = await runInTransaction(async () => {
@@ -205,7 +210,7 @@ router.post('/', authenticate, maintenanceOrderCreateValidation, async (req, res
         `INSERT INTO maintenance_orders 
          (plot_id, plot_number, reason, plan_date, handler_id, handler_name, created_by, created_by_name, remark) 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [plot_id, plot.plot_number, reason, plan_date, handler_id, handlerName, req.user.id, req.user.name, remark]
+        [plot_id, plot.plot_number, reason, plan_date, handlerId, handlerName, req.user.id, req.user.name, remark]
       );
       
       await run('UPDATE plots SET status = ? WHERE id = ?', ['维修中', plot_id]);
@@ -250,6 +255,14 @@ router.post('/:id/start', authenticate, idParamValidation, maintenanceOrderStart
         return error(res, '处理人不存在', 404);
       }
       handlerName = handler.name;
+    } else if (handlerId && !handlerName) {
+      const handler = await get('SELECT name FROM users WHERE id = ?', [handlerId]);
+      if (handler) {
+        handlerName = handler.name;
+      } else {
+        handlerId = req.user.id;
+        handlerName = req.user.name;
+      }
     } else if (!handlerId) {
       handlerId = req.user.id;
       handlerName = req.user.name;
