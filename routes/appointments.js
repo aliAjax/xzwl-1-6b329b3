@@ -4,6 +4,7 @@ const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { appointmentCreateValidation, idParamValidation } = require('../middleware/validator');
+const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
 
@@ -197,6 +198,9 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
       'INSERT INTO appointments (contact_id, plot_id, appointment_date, appointment_time, number_of_people, vehicle_number, remark) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [contact_id, plot_id, appointment_date, appointment_time, number_of_people || 1, vehicle_number, remark]
     );
+
+    const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.CREATE, req.body);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, result.id, ACTIONS.CREATE, summary);
     
     success(res, { id: result.id }, '预约创建成功');
   } catch (err) {
@@ -208,7 +212,7 @@ router.post('/:id/confirm', authenticate, idParamValidation, async (req, res) =>
   try {
     const { id } = req.params;
     
-    const existing = await get('SELECT id, status FROM appointments WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM appointments WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '预约记录不存在', 404);
     }
@@ -218,6 +222,11 @@ router.post('/:id/confirm', authenticate, idParamValidation, async (req, res) =>
     }
     
     await run('UPDATE appointments SET status = "已确认" WHERE id = ?', [id]);
+
+    const newData = { status: '已确认' };
+    const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary);
+
     success(res, null, '预约已确认');
   } catch (err) {
     error(res, err.message, 500);
@@ -228,7 +237,7 @@ router.post('/:id/complete', authenticate, idParamValidation, async (req, res) =
   try {
     const { id } = req.params;
     
-    const existing = await get('SELECT id, status FROM appointments WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM appointments WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '预约记录不存在', 404);
     }
@@ -238,6 +247,11 @@ router.post('/:id/complete', authenticate, idParamValidation, async (req, res) =
     }
     
     await run('UPDATE appointments SET status = "已完成" WHERE id = ?', [id]);
+
+    const newData = { status: '已完成' };
+    const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary);
+
     success(res, null, '预约已完成');
   } catch (err) {
     error(res, err.message, 500);
@@ -249,7 +263,7 @@ router.post('/:id/cancel', authenticate, idParamValidation, async (req, res) => 
     const { id } = req.params;
     const { reason } = req.body;
     
-    const existing = await get('SELECT id, status FROM appointments WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM appointments WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '预约记录不存在', 404);
     }
@@ -260,6 +274,11 @@ router.post('/:id/cancel', authenticate, idParamValidation, async (req, res) => 
     
     const remark = reason ? `${existing.remark || ''} 取消原因: ${reason}`.trim() : existing.remark;
     await run('UPDATE appointments SET status = "已取消", remark = ? WHERE id = ?', [remark, id]);
+
+    const newData = { status: '已取消', remark };
+    const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary);
+
     success(res, null, '预约已取消');
   } catch (err) {
     error(res, err.message, 500);
@@ -271,7 +290,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     const { id } = req.params;
     const { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark } = req.body;
     
-    const existing = await get('SELECT id FROM appointments WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM appointments WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '预约记录不存在', 404);
     }
@@ -294,6 +313,18 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       'UPDATE appointments SET contact_id = ?, plot_id = ?, appointment_date = ?, appointment_time = ?, number_of_people = ?, status = ?, vehicle_number = ?, remark = ? WHERE id = ?',
       [contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark, id]
     );
+
+    const newData = { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark };
+    let action = ACTIONS.UPDATE;
+    let summary;
+
+    if (existing.status !== status) {
+      action = ACTIONS.STATUS_CHANGE;
+      summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
+    } else {
+      summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.UPDATE, newData, existing);
+    }
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, action, summary);
     
     success(res, null, '预约更新成功');
   } catch (err) {
@@ -305,11 +336,15 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const result = await run('DELETE FROM appointments WHERE id = ?', [id]);
-    
-    if (result.changes === 0) {
+    const existing = await get('SELECT * FROM appointments WHERE id = ?', [id]);
+    if (!existing) {
       return error(res, '预约记录不存在', 404);
     }
+    
+    await run('DELETE FROM appointments WHERE id = ?', [id]);
+
+    const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.DELETE, existing);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.DELETE, summary);
     
     success(res, null, '预约删除成功');
   } catch (err) {

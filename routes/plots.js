@@ -3,6 +3,7 @@ const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { plotCreateValidation, idParamValidation } = require('../middleware/validator');
+const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
 
@@ -208,6 +209,9 @@ router.post('/', authenticate, plotCreateValidation, async (req, res) => {
       'INSERT INTO plots (plot_number, area, row, col, status, type, price, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [plot_number, area, row, col, status || '空闲', type || '单穴', price || 0, remark]
     );
+
+    const summary = generateSummary(RESOURCE_TYPES.PLOT, ACTIONS.CREATE, req.body);
+    await logOperation(req, RESOURCE_TYPES.PLOT, result.id, ACTIONS.CREATE, summary);
     
     success(res, { id: result.id }, '墓位创建成功');
   } catch (err) {
@@ -242,6 +246,9 @@ router.post('/batch', authenticate, async (req, res) => {
           'INSERT INTO plots (plot_number, area, row, col, status, type, price) VALUES (?, ?, ?, ?, ?, ?, ?)',
           [plotNumber, area, row, col, '空闲', type || '单穴', price || 0]
         );
+
+        const summary = generateSummary(RESOURCE_TYPES.PLOT, ACTIONS.CREATE, { plot_number: plotNumber, area, row, col });
+        await logOperation(req, RESOURCE_TYPES.PLOT, result.id, ACTIONS.CREATE, summary);
         
         created.push({ id: result.id, plot_number: plotNumber });
       }
@@ -258,7 +265,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     const { id } = req.params;
     const { plot_number, area, row, col, status, type, price, remark } = req.body;
     
-    const existing = await get('SELECT id FROM plots WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM plots WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '墓位不存在', 404);
     }
@@ -277,6 +284,18 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       'UPDATE plots SET plot_number = ?, area = ?, row = ?, col = ?, status = ?, type = ?, price = ?, remark = ? WHERE id = ?',
       [plot_number, area, row, col, status, type, price, remark, id]
     );
+
+    const newData = { plot_number, area, row, col, status, type, price, remark };
+    let action = ACTIONS.UPDATE;
+    let summary;
+
+    if (existing.status !== status) {
+      action = ACTIONS.STATUS_CHANGE;
+      summary = generateSummary(RESOURCE_TYPES.PLOT, ACTIONS.STATUS_CHANGE, newData, existing);
+    } else {
+      summary = generateSummary(RESOURCE_TYPES.PLOT, ACTIONS.UPDATE, newData, existing);
+    }
+    await logOperation(req, RESOURCE_TYPES.PLOT, id, action, summary);
     
     success(res, null, '墓位更新成功');
   } catch (err) {
@@ -298,6 +317,10 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
     }
     
     await run('DELETE FROM plots WHERE id = ?', [id]);
+
+    const summary = generateSummary(RESOURCE_TYPES.PLOT, ACTIONS.DELETE, plot);
+    await logOperation(req, RESOURCE_TYPES.PLOT, id, ACTIONS.DELETE, summary);
+
     success(res, null, '墓位删除成功');
   } catch (err) {
     error(res, err.message, 500);

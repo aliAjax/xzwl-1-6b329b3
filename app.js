@@ -17,6 +17,7 @@ const dashboardRoutes = require('./routes/dashboard');
 const serviceItemRoutes = require('./routes/serviceItems');
 const serviceOrderRoutes = require('./routes/serviceOrders');
 const importRoutes = require('./routes/imports');
+const operationLogRoutes = require('./routes/operationLogs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -37,6 +38,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/service-items', serviceItemRoutes);
 app.use('/api/service-orders', serviceOrderRoutes);
 app.use('/api/import', importRoutes);
+app.use('/api/operation-logs', operationLogRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({

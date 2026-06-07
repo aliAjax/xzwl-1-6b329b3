@@ -137,6 +137,19 @@ const createTables = () => {
         FOREIGN KEY (plot_id) REFERENCES plots(id),
         FOREIGN KEY (appointment_id) REFERENCES appointments(id),
         FOREIGN KEY (operator_id) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS operation_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        ip_address TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
       )`, (err) => {
         if (err) reject(err);
         else resolve();

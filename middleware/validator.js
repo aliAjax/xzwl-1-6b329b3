@@ -94,6 +94,17 @@ const importConfirmValidation = [
   validate
 ];
 
+const operationLogQueryValidation = [
+  query('resource_type').optional().isIn(['plot', 'deceased', 'contact', 'payment', 'appointment', 'visit_record']).withMessage('资源类型无效'),
+  query('user_id').optional().isInt().withMessage('操作人ID无效'),
+  query('start_date').optional().isISO8601().withMessage('开始日期格式无效'),
+  query('end_date').optional().isISO8601().withMessage('结束日期格式无效'),
+  query('action').optional().isIn(['create', 'update', 'delete', 'status_change']).withMessage('操作类型无效'),
+  query('page').optional().isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional().isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -108,5 +119,6 @@ module.exports = {
   serviceOrderStatusValidation,
   idParamValidation,
   importPreviewValidation,
-  importConfirmValidation
+  importConfirmValidation,
+  operationLogQueryValidation
 };

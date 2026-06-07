@@ -4,6 +4,7 @@ const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { paymentCreateValidation, idParamValidation } = require('../middleware/validator');
+const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
 
@@ -279,6 +280,9 @@ router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
       'INSERT INTO payments (plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [plot_id, contact_id, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark]
     );
+
+    const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.CREATE, req.body);
+    await logOperation(req, RESOURCE_TYPES.PAYMENT, result.id, ACTIONS.CREATE, summary);
     
     success(res, { id: result.id }, '缴费记录创建成功');
   } catch (err) {
@@ -291,7 +295,7 @@ router.post('/:id/pay', authenticate, idParamValidation, async (req, res) => {
     const { id } = req.params;
     const { payment_date, payment_method, amount, remark } = req.body;
     
-    const existing = await get('SELECT id, amount FROM payments WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM payments WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '缴费记录不存在', 404);
     }
@@ -303,6 +307,10 @@ router.post('/:id/pay', authenticate, idParamValidation, async (req, res) => {
       'UPDATE payments SET status = "已缴", payment_date = ?, payment_method = ?, amount = ?, remark = COALESCE(?, remark) WHERE id = ?',
       [payDate, payment_method, payAmount, remark, id]
     );
+
+    const newData = { status: '已缴', payment_date: payDate, payment_method, amount: payAmount };
+    const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.STATUS_CHANGE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.PAYMENT, id, ACTIONS.STATUS_CHANGE, summary);
     
     success(res, null, '缴费成功');
   } catch (err) {
@@ -315,7 +323,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     const { id } = req.params;
     const { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark } = req.body;
     
-    const existing = await get('SELECT id FROM payments WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM payments WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '缴费记录不存在', 404);
     }
@@ -331,6 +339,18 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       'UPDATE payments SET plot_id = ?, contact_id = ?, amount = ?, payment_date = ?, start_date = ?, due_date = ?, status = ?, payment_method = ?, remark = ? WHERE id = ?',
       [plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark, id]
     );
+
+    const newData = { plot_id, contact_id, amount, payment_date, start_date, due_date, status, payment_method, remark };
+    let action = ACTIONS.UPDATE;
+    let summary;
+
+    if (existing.status !== status) {
+      action = ACTIONS.STATUS_CHANGE;
+      summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.STATUS_CHANGE, newData, existing);
+    } else {
+      summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.UPDATE, newData, existing);
+    }
+    await logOperation(req, RESOURCE_TYPES.PAYMENT, id, action, summary);
     
     success(res, null, '缴费记录更新成功');
   } catch (err) {
@@ -342,11 +362,15 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const result = await run('DELETE FROM payments WHERE id = ?', [id]);
-    
-    if (result.changes === 0) {
+    const existing = await get('SELECT * FROM payments WHERE id = ?', [id]);
+    if (!existing) {
       return error(res, '缴费记录不存在', 404);
     }
+    
+    await run('DELETE FROM payments WHERE id = ?', [id]);
+
+    const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.DELETE, existing);
+    await logOperation(req, RESOURCE_TYPES.PAYMENT, id, ACTIONS.DELETE, summary);
     
     success(res, null, '缴费记录删除成功');
   } catch (err) {

@@ -3,6 +3,7 @@ const { run, get, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { deceasedCreateValidation, idParamValidation } = require('../middleware/validator');
+const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
 
@@ -87,6 +88,9 @@ router.post('/', authenticate, deceasedCreateValidation, async (req, res) => {
     if (plot_id) {
       await run('UPDATE plots SET status = "已占用" WHERE id = ?', [plot_id]);
     }
+
+    const summary = generateSummary(RESOURCE_TYPES.DECEASED, ACTIONS.CREATE, req.body);
+    await logOperation(req, RESOURCE_TYPES.DECEASED, result.id, ACTIONS.CREATE, summary);
     
     success(res, { id: result.id }, '逝者信息创建成功');
   } catch (err) {
@@ -99,7 +103,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     const { id } = req.params;
     const { name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark } = req.body;
     
-    const existing = await get('SELECT id, plot_id FROM deceased WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM deceased WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '逝者信息不存在', 404);
     }
@@ -124,6 +128,10 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       'UPDATE deceased SET name = ?, gender = ?, birth_date = ?, death_date = ?, plot_id = ?, relationship = ?, interment_date = ?, remark = ? WHERE id = ?',
       [name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark, id]
     );
+
+    const newData = { name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark };
+    const summary = generateSummary(RESOURCE_TYPES.DECEASED, ACTIONS.UPDATE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.DECEASED, id, ACTIONS.UPDATE, summary);
     
     success(res, null, '逝者信息更新成功');
   } catch (err) {
@@ -148,6 +156,9 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
         await run('UPDATE plots SET status = "空闲" WHERE id = ?', [existing.plot_id]);
       }
     }
+
+    const summary = generateSummary(RESOURCE_TYPES.DECEASED, ACTIONS.DELETE, existing);
+    await logOperation(req, RESOURCE_TYPES.DECEASED, id, ACTIONS.DELETE, summary);
     
     success(res, null, '逝者信息删除成功');
   } catch (err) {

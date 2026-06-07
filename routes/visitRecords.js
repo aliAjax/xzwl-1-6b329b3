@@ -4,6 +4,7 @@ const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { visitRecordCreateValidation, idParamValidation } = require('../middleware/validator');
+const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
 
@@ -255,6 +256,9 @@ router.post('/', authenticate, visitRecordCreateValidation, async (req, res) => 
       'INSERT INTO visit_records (contact_id, user_id, type, visit_date, content, follow_up_date, status, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [contact_id, userId, type, visit_date, content, follow_up_date, status || '待跟进', remark]
     );
+
+    const summary = generateSummary(RESOURCE_TYPES.VISIT_RECORD, ACTIONS.CREATE, req.body);
+    await logOperation(req, RESOURCE_TYPES.VISIT_RECORD, result.id, ACTIONS.CREATE, summary);
     
     success(res, { id: result.id }, '记录创建成功');
   } catch (err) {
@@ -267,7 +271,7 @@ router.post('/:id/complete', authenticate, idParamValidation, async (req, res) =
     const { id } = req.params;
     const { follow_up_remark } = req.body;
     
-    const existing = await get('SELECT id, status FROM visit_records WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM visit_records WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '记录不存在', 404);
     }
@@ -275,6 +279,11 @@ router.post('/:id/complete', authenticate, idParamValidation, async (req, res) =
     const remark = follow_up_remark ? `${existing.remark || ''} 跟进结果: ${follow_up_remark}`.trim() : existing.remark;
     
     await run('UPDATE visit_records SET status = "已完成", remark = ? WHERE id = ?', [remark, id]);
+
+    const newData = { status: '已完成', remark };
+    const summary = generateSummary(RESOURCE_TYPES.VISIT_RECORD, ACTIONS.STATUS_CHANGE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.VISIT_RECORD, id, ACTIONS.STATUS_CHANGE, summary);
+
     success(res, null, '跟进已完成');
   } catch (err) {
     error(res, err.message, 500);
@@ -286,7 +295,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     const { id } = req.params;
     const { contact_id, type, visit_date, content, follow_up_date, status, remark } = req.body;
     
-    const existing = await get('SELECT id FROM visit_records WHERE id = ?', [id]);
+    const existing = await get('SELECT * FROM visit_records WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '记录不存在', 404);
     }
@@ -302,6 +311,18 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       'UPDATE visit_records SET contact_id = ?, type = ?, visit_date = ?, content = ?, follow_up_date = ?, status = ?, remark = ? WHERE id = ?',
       [contact_id, type, visit_date, content, follow_up_date, status, remark, id]
     );
+
+    const newData = { contact_id, type, visit_date, content, follow_up_date, status, remark };
+    let action = ACTIONS.UPDATE;
+    let summary;
+
+    if (existing.status !== status) {
+      action = ACTIONS.STATUS_CHANGE;
+      summary = generateSummary(RESOURCE_TYPES.VISIT_RECORD, ACTIONS.STATUS_CHANGE, newData, existing);
+    } else {
+      summary = generateSummary(RESOURCE_TYPES.VISIT_RECORD, ACTIONS.UPDATE, newData, existing);
+    }
+    await logOperation(req, RESOURCE_TYPES.VISIT_RECORD, id, action, summary);
     
     success(res, null, '记录更新成功');
   } catch (err) {
@@ -313,11 +334,15 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const result = await run('DELETE FROM visit_records WHERE id = ?', [id]);
-    
-    if (result.changes === 0) {
+    const existing = await get('SELECT * FROM visit_records WHERE id = ?', [id]);
+    if (!existing) {
       return error(res, '记录不存在', 404);
     }
+    
+    await run('DELETE FROM visit_records WHERE id = ?', [id]);
+
+    const summary = generateSummary(RESOURCE_TYPES.VISIT_RECORD, ACTIONS.DELETE, existing);
+    await logOperation(req, RESOURCE_TYPES.VISIT_RECORD, id, ACTIONS.DELETE, summary);
     
     success(res, null, '记录删除成功');
   } catch (err) {
