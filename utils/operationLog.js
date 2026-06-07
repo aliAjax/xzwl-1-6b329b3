@@ -10,7 +10,10 @@ const RESOURCE_TYPES = {
   VISIT_RECORD: 'visit_record',
   BILL_BATCH: 'bill_batch',
   REMINDER_BATCH: 'reminder_batch',
-  MAINTENANCE_ORDER: 'maintenance_order'
+  MAINTENANCE_ORDER: 'maintenance_order',
+  FESTIVAL_SCHEDULE: 'festival_schedule',
+  FESTIVAL_TIME_SLOT: 'festival_time_slot',
+  FESTIVAL_STAFF_SCHEDULE: 'festival_staff_schedule'
 };
 
 const ACTIONS = {
@@ -53,7 +56,10 @@ const generateSummary = (resourceType, action, data, oldData = null) => {
     visit_record: '沟通记录',
     bill_batch: '账单批次',
     reminder_batch: '提醒批次',
-    maintenance_order: '维修工单'
+    maintenance_order: '维修工单',
+    festival_schedule: '节日排班',
+    festival_time_slot: '时段容量',
+    festival_staff_schedule: '工作人员排班'
   };
 
   const actionNames = {

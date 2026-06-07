@@ -5,6 +5,7 @@ const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { appointmentCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
+const { checkCapacity, linkAppointmentToSlot, unlinkAppointmentFromSlot, findMatchingTimeSlot } = require('../utils/festivalHelper');
 
 const router = express.Router();
 
@@ -159,8 +160,27 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
     if (!appointment) {
       return error(res, '预约记录不存在', 404);
     }
+
+    const slotInfo = await get(`
+      SELECT fts.id as time_slot_id,
+             fts.date,
+             fts.start_time,
+             fts.end_time,
+             fts.capacity,
+             fs.festival_name,
+             fs.festival_type
+      FROM festival_appointment_slots fas
+      INNER JOIN festival_time_slots fts ON fas.time_slot_id = fts.id
+      INNER JOIN festival_schedules fs ON fts.festival_schedule_id = fs.id
+      WHERE fas.appointment_id = ?
+    `, [req.params.id]);
+
+    const result = {
+      ...appointment,
+      festival_slot: slotInfo || null
+    };
     
-    success(res, appointment);
+    success(res, result);
   } catch (err) {
     error(res, err.message, 500);
   }
@@ -184,13 +204,18 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
       }
     }
     
+    const capacityCheck = await checkCapacity(appointment_date, appointment_time, number_of_people || 1);
+    if (capacityCheck.hasSlot && !capacityCheck.isAvailable) {
+      return error(res, `该时段预约已满，剩余容量: ${capacityCheck.remaining}，总容量: ${capacityCheck.capacity}`, 400);
+    }
+    
     const existingCount = await get(`
       SELECT COUNT(*) as count 
       FROM appointments 
       WHERE appointment_date = ? AND status IN ('待确认', '已确认')
     `, [appointment_date]);
     
-    if (existingCount.count >= 50) {
+    if (existingCount.count >= 50 && !capacityCheck.hasSlot) {
       return error(res, '该日预约已满，请选择其他日期', 400);
     }
     
@@ -199,10 +224,22 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
       [contact_id, plot_id, appointment_date, appointment_time, number_of_people || 1, vehicle_number, remark]
     );
 
+    if (capacityCheck.hasSlot) {
+      await linkAppointmentToSlot(result.id, appointment_date, appointment_time);
+    }
+
     const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.CREATE, req.body);
     await logOperation(req, RESOURCE_TYPES.APPOINTMENT, result.id, ACTIONS.CREATE, summary);
     
-    success(res, { id: result.id }, '预约创建成功');
+    success(res, { 
+      id: result.id,
+      capacity_info: capacityCheck.hasSlot ? {
+        has_slot: true,
+        capacity: capacityCheck.capacity,
+        booked: capacityCheck.booked + (number_of_people || 1),
+        remaining: capacityCheck.remaining - (number_of_people || 1)
+      } : { has_slot: false }
+    }, '预约创建成功');
   } catch (err) {
     error(res, err.message, 500);
   }
@@ -275,6 +312,8 @@ router.post('/:id/cancel', authenticate, idParamValidation, async (req, res) => 
     const remark = reason ? `${existing.remark || ''} 取消原因: ${reason}`.trim() : existing.remark;
     await run('UPDATE appointments SET status = "已取消", remark = ? WHERE id = ?', [remark, id]);
 
+    await unlinkAppointmentFromSlot(id);
+
     const newData = { status: '已取消', remark };
     const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
     await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary);
@@ -306,6 +345,58 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       const plot = await get('SELECT id FROM plots WHERE id = ?', [plot_id]);
       if (!plot) {
         return error(res, '墓位不存在', 400);
+      }
+    }
+
+    const newDate = appointment_date || existing.appointment_date;
+    const newTime = appointment_time !== undefined ? appointment_time : existing.appointment_time;
+    const newNumberOfPeople = number_of_people !== undefined ? number_of_people : existing.number_of_people;
+    const newStatus = status || existing.status;
+
+    const dateOrTimeChanged = (appointment_date && appointment_date !== existing.appointment_date) || 
+                              (appointment_time !== undefined && appointment_time !== existing.appointment_time);
+    const peopleChanged = number_of_people !== undefined && number_of_people !== existing.number_of_people;
+
+    if (dateOrTimeChanged || peopleChanged) {
+      const oldSlot = await findMatchingTimeSlot(existing.appointment_date, existing.appointment_time);
+      const newSlot = await findMatchingTimeSlot(newDate, newTime);
+
+      if (oldSlot && (!newSlot || oldSlot.id !== newSlot.id)) {
+        await unlinkAppointmentFromSlot(id);
+      }
+
+      if (newSlot && ['待确认', '已确认'].includes(newStatus)) {
+        const { getSlotOccupancy } = require('../utils/festivalHelper');
+        const currentOccupancy = await getSlotOccupancy(newSlot.id, newSlot.date, newSlot.start_time, newSlot.end_time);
+        
+        let bookedCount = currentOccupancy.total_people;
+        if (oldSlot && oldSlot.id === newSlot.id) {
+          bookedCount -= existing.number_of_people;
+        }
+        
+        const remaining = newSlot.capacity - bookedCount;
+        if (newNumberOfPeople > remaining) {
+          return error(res, `该时段容量不足，剩余容量: ${remaining}，需要: ${newNumberOfPeople}`, 400);
+        }
+      }
+
+      if (newSlot && ['待确认', '已确认'].includes(newStatus)) {
+        await linkAppointmentToSlot(id, newDate, newTime);
+      }
+    }
+
+    if (status && status !== existing.status && ['已完成', '已取消'].includes(status)) {
+      await unlinkAppointmentFromSlot(id);
+    }
+
+    if (status && status !== existing.status && ['待确认', '已确认'].includes(status)) {
+      const slot = await findMatchingTimeSlot(newDate, newTime);
+      if (slot) {
+        const capacityCheck = await checkCapacity(newDate, newTime, newNumberOfPeople);
+        if (!capacityCheck.isAvailable) {
+          return error(res, `该时段预约已满，剩余容量: ${capacityCheck.remaining}`, 400);
+        }
+        await linkAppointmentToSlot(id, newDate, newTime);
       }
     }
     
@@ -341,6 +432,7 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
       return error(res, '预约记录不存在', 404);
     }
     
+    await unlinkAppointmentFromSlot(id);
     await run('DELETE FROM appointments WHERE id = ?', [id]);
 
     const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.DELETE, existing);

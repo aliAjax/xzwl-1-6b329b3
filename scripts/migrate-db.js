@@ -191,6 +191,79 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
     });
     log(`maintenance_orders 表字段: ${maintenanceOrderColumns.join(', ')}`);
 
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS festival_schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        festival_name TEXT NOT NULL,
+        festival_type TEXT NOT NULL DEFAULT 'custom',
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by INTEGER NOT NULL,
+        created_by_name TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('festival_schedules 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS festival_time_slots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        festival_schedule_id INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        capacity INTEGER NOT NULL DEFAULT 50,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (festival_schedule_id) REFERENCES festival_schedules(id),
+        UNIQUE(festival_schedule_id, date, start_time, end_time)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('festival_time_slots 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS festival_staff_schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        time_slot_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        duty TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (time_slot_id) REFERENCES festival_time_slots(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        UNIQUE(time_slot_id, user_id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('festival_staff_schedules 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS festival_appointment_slots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        appointment_id INTEGER NOT NULL,
+        time_slot_id INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (appointment_id) REFERENCES appointments(id),
+        FOREIGN KEY (time_slot_id) REFERENCES festival_time_slots(id),
+        UNIQUE(appointment_id, time_slot_id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('festival_appointment_slots 表已就绪');
+
     log('');
     log('数据库迁移完成！');
     if (exitOnComplete) {

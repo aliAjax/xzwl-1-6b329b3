@@ -65,6 +65,16 @@ const idParamValidation = [
   validate
 ];
 
+const slotIdParamValidation = [
+  param('slotId').isInt().withMessage('时段ID无效'),
+  validate
+];
+
+const staffIdParamValidation = [
+  param('staffId').isInt().withMessage('排班ID无效'),
+  validate
+];
+
 const serviceItemCreateValidation = [
   body('name').notEmpty().withMessage('服务名称不能为空'),
   body('category').notEmpty().withMessage('服务分类不能为空'),
@@ -198,6 +208,71 @@ const maintenanceOrderCancelValidation = [
   validate
 ];
 
+const festivalScheduleCreateValidation = [
+  body('festival_name').notEmpty().withMessage('节日名称不能为空'),
+  body('festival_type').optional({ checkFalsy: true }).isIn(['清明节', '中元节', '寒衣节', '春节', 'custom']).withMessage('节日类型无效'),
+  body('start_date').isISO8601().withMessage('开始日期格式无效'),
+  body('end_date').isISO8601().withMessage('结束日期格式无效'),
+  body('description').optional({ checkFalsy: true }).isString().withMessage('描述必须是字符串'),
+  body('time_slots').isArray({ min: 1 }).withMessage('时段配置不能为空且必须是数组'),
+  body('time_slots.*.date').isISO8601().withMessage('时段日期格式无效'),
+  body('time_slots.*.start_time').notEmpty().withMessage('开始时间不能为空'),
+  body('time_slots.*.end_time').notEmpty().withMessage('结束时间不能为空'),
+  body('time_slots.*.capacity').isInt({ min: 1 }).withMessage('容量必须是大于0的整数'),
+  body('time_slots.*.staff').optional({ checkFalsy: true }).isArray().withMessage('工作人员配置必须是数组'),
+  body('time_slots.*.staff.*.user_id').isInt().withMessage('工作人员ID无效'),
+  body('time_slots.*.staff.*.duty').optional({ checkFalsy: true }).isString().withMessage('职责必须是字符串'),
+  validate
+];
+
+const festivalScheduleUpdateValidation = [
+  body('festival_name').optional({ checkFalsy: true }).notEmpty().withMessage('节日名称不能为空'),
+  body('festival_type').optional({ checkFalsy: true }).isIn(['清明节', '中元节', '寒衣节', '春节', 'custom']).withMessage('节日类型无效'),
+  body('start_date').optional({ checkFalsy: true }).isISO8601().withMessage('开始日期格式无效'),
+  body('end_date').optional({ checkFalsy: true }).isISO8601().withMessage('结束日期格式无效'),
+  body('status').optional({ checkFalsy: true }).isIn(['active', 'inactive']).withMessage('状态无效'),
+  body('description').optional({ checkFalsy: true }).isString().withMessage('描述必须是字符串'),
+  validate
+];
+
+const festivalScheduleQueryValidation = [
+  query('festival_type').optional({ checkFalsy: true }).isIn(['清明节', '中元节', '寒衣节', '春节', 'custom']).withMessage('节日类型无效'),
+  query('status').optional({ checkFalsy: true }).isIn(['active', 'inactive']).withMessage('状态无效'),
+  query('start_date').optional({ checkFalsy: true }).isISO8601().withMessage('开始日期格式无效'),
+  query('end_date').optional({ checkFalsy: true }).isISO8601().withMessage('结束日期格式无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
+const festivalTimeSlotCreateValidation = [
+  body('festival_schedule_id').isInt().withMessage('节日排班ID无效'),
+  body('date').isISO8601().withMessage('日期格式无效'),
+  body('start_time').notEmpty().withMessage('开始时间不能为空'),
+  body('end_time').notEmpty().withMessage('结束时间不能为空'),
+  body('capacity').isInt({ min: 1 }).withMessage('容量必须是大于0的整数'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const festivalTimeSlotUpdateValidation = [
+  body('capacity').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('容量必须是大于0的整数'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const festivalStaffScheduleCreateValidation = [
+  body('time_slot_id').isInt().withMessage('时段ID无效'),
+  body('user_id').isInt().withMessage('用户ID无效'),
+  body('duty').optional({ checkFalsy: true }).isString().withMessage('职责必须是字符串'),
+  validate
+];
+
+const festivalQueryByDateValidation = [
+  query('date').isISO8601().withMessage('日期格式无效'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -211,6 +286,8 @@ module.exports = {
   serviceOrderCreateValidation,
   serviceOrderStatusValidation,
   idParamValidation,
+  slotIdParamValidation,
+  staffIdParamValidation,
   importPreviewValidation,
   importConfirmValidation,
   operationLogQueryValidation,
@@ -225,5 +302,12 @@ module.exports = {
   maintenanceOrderQueryValidation,
   maintenanceOrderStartValidation,
   maintenanceOrderCompleteValidation,
-  maintenanceOrderCancelValidation
+  maintenanceOrderCancelValidation,
+  festivalScheduleCreateValidation,
+  festivalScheduleUpdateValidation,
+  festivalScheduleQueryValidation,
+  festivalTimeSlotCreateValidation,
+  festivalTimeSlotUpdateValidation,
+  festivalStaffScheduleCreateValidation,
+  festivalQueryByDateValidation
 };
