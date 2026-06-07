@@ -2,6 +2,7 @@
 import requests
 import json
 import sys
+import time
 
 BASE_URL = "http://localhost:3000/api"
 
@@ -35,12 +36,14 @@ def main():
     print(f"✓ 登录成功，用户: {current_user['name']} (ID: {current_user['id']})")
     
     test_results = []
+    suffix = str(int(time.time() * 1000))
+    row_number = int(suffix)
     
     print_section("测试1: 创建测试墓位")
     r = requests.post(f"{BASE_URL}/plots", headers=headers, json={
-        "plot_number": "TEST-HANDLER-001",
+        "plot_number": f"TEST-HANDLER-001-{suffix}",
         "area": "测试区",
-        "row": 98,
+        "row": row_number,
         "col": 1,
         "status": "空闲",
         "type": "单穴",
@@ -51,10 +54,8 @@ def main():
         plot_id = result["data"]["id"]
         test_results.append(print_result("创建墓位成功", True, f"墓位ID: {plot_id}"))
     else:
-        r = requests.get(f"{BASE_URL}/plots?keyword=TEST-HANDLER-001", headers=headers)
-        result = r.json()
-        plot_id = result["data"]["list"][0]["id"]
-        test_results.append(print_result("找到已存在的墓位", True, f"墓位ID: {plot_id}"))
+        test_results.append(print_result("创建墓位失败", False, result["message"]))
+        return
     
     print_section("测试2: 创建工单不指定处理人 - 应默认使用当前用户")
     r = requests.post(f"{BASE_URL}/maintenance-orders", headers=headers, json={
@@ -83,15 +84,18 @@ def main():
             order['handler_name'] == current_user['name'],
             f"handler_name: {order['handler_name']}"
         ))
+        requests.post(f"{BASE_URL}/maintenance-orders/{order_id}/cancel", headers=headers, json={
+            "remark": "默认处理人姓名测试清理"
+        })
     else:
         test_results.append(print_result("创建工单失败", False, result["message"]))
         return
     
     print_section("测试3: 创建工单指定处理人ID - 应自动获取姓名")
     r = requests.post(f"{BASE_URL}/plots", headers=headers, json={
-        "plot_number": "TEST-HANDLER-002",
+        "plot_number": f"TEST-HANDLER-002-{suffix}",
         "area": "测试区",
-        "row": 98,
+        "row": row_number,
         "col": 2,
         "status": "空闲",
         "type": "单穴",
@@ -101,9 +105,8 @@ def main():
     if result["code"] == 200:
         plot_id_2 = result["data"]["id"]
     else:
-        r = requests.get(f"{BASE_URL}/plots?keyword=TEST-HANDLER-002", headers=headers)
-        result = r.json()
-        plot_id_2 = result["data"]["list"][0]["id"]
+        test_results.append(print_result("创建第二个墓位失败", False, result["message"]))
+        return
     
     r = requests.post(f"{BASE_URL}/maintenance-orders", headers=headers, json={
         "plot_id": plot_id_2,
@@ -127,14 +130,18 @@ def main():
             order['handler_name'] == current_user['name'],
             f"handler_name: {order['handler_name']}"
         ))
+        requests.post(f"{BASE_URL}/maintenance-orders/{order_id_2}/cancel", headers=headers, json={
+            "remark": "指定处理人姓名测试清理"
+        })
     else:
         test_results.append(print_result("创建工单失败", False, result["message"]))
+        return
     
     print_section("测试4: 开始处理时补齐处理人姓名")
     r = requests.post(f"{BASE_URL}/plots", headers=headers, json={
-        "plot_number": "TEST-HANDLER-003",
+        "plot_number": f"TEST-HANDLER-003-{suffix}",
         "area": "测试区",
-        "row": 98,
+        "row": row_number,
         "col": 3,
         "status": "空闲",
         "type": "单穴",
@@ -144,9 +151,8 @@ def main():
     if result["code"] == 200:
         plot_id_3 = result["data"]["id"]
     else:
-        r = requests.get(f"{BASE_URL}/plots?keyword=TEST-HANDLER-003", headers=headers)
-        result = r.json()
-        plot_id_3 = result["data"]["list"][0]["id"]
+        test_results.append(print_result("创建第三个墓位失败", False, result["message"]))
+        return
     
     r = requests.post(f"{BASE_URL}/maintenance-orders", headers=headers, json={
         "plot_id": plot_id_3,
@@ -154,6 +160,9 @@ def main():
         "handler_id": current_user['id']
     })
     result = r.json()
+    if result["code"] != 200:
+        test_results.append(print_result("创建待处理工单失败", False, result["message"]))
+        return
     order_id_3 = result["data"]["id"]
     
     r = requests.post(f"{BASE_URL}/maintenance-orders/{order_id_3}/start", headers=headers, json={})
@@ -173,6 +182,9 @@ def main():
             order['handler_name'] == current_user['name'],
             f"handler_name: {order['handler_name']}"
         ))
+        requests.post(f"{BASE_URL}/maintenance-orders/{order_id_3}/cancel", headers=headers, json={
+            "remark": "开始处理补齐姓名测试清理"
+        })
     else:
         test_results.append(print_result("开始处理失败", False, result["message"]))
     
