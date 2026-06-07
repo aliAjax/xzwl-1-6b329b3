@@ -1,0 +1,72 @@
+const express = require('express');
+const cors = require('cors');
+require('dotenv').config();
+
+const { createTables } = require('./models');
+const { error } = require('./utils/response');
+
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
+const plotRoutes = require('./routes/plots');
+const deceasedRoutes = require('./routes/deceased');
+const contactRoutes = require('./routes/contacts');
+const paymentRoutes = require('./routes/payments');
+const appointmentRoutes = require('./routes/appointments');
+const visitRecordRoutes = require('./routes/visitRecords');
+const dashboardRoutes = require('./routes/dashboard');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/plots', plotRoutes);
+app.use('/api/deceased', deceasedRoutes);
+app.use('/api/contacts', contactRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/appointments', appointmentRoutes);
+app.use('/api/visit-records', visitRecordRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    code: 200,
+    message: '服务运行正常',
+    data: {
+      timestamp: new Date().toISOString(),
+      version: '1.0.0'
+    }
+  });
+});
+
+app.use((req, res) => {
+  error(res, '接口不存在', 404);
+});
+
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  error(res, '服务器内部错误', 500);
+});
+
+const startServer = async () => {
+  try {
+    await createTables();
+    console.log('数据库表初始化完成');
+    
+    app.listen(PORT, () => {
+      console.log(`服务器运行在 http://localhost:${PORT}`);
+      console.log(`API文档: 请参考 README.md 文件`);
+    });
+  } catch (err) {
+    console.error('启动服务器失败:', err);
+    process.exit(1);
+  }
+};
+
+startServer();
+
+module.exports = app;
