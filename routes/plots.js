@@ -79,6 +79,7 @@ router.get('/area/:area/occupancy', authenticate, async (req, res) => {
     const occupied = plots.filter(p => p.status === '已占用').length;
     const available = plots.filter(p => p.status === '空闲').length;
     const maintenance = plots.filter(p => p.status === '维修中').length;
+    const reserved = plots.filter(p => p.status === '预留中').length;
     
     const rows = [...new Set(plots.map(p => p.row))].sort((a, b) => a - b);
     const cols = [...new Set(plots.map(p => p.col))].sort((a, b) => a - b);
@@ -96,6 +97,7 @@ router.get('/area/:area/occupancy', authenticate, async (req, res) => {
         occupied,
         available,
         maintenance,
+        reserved,
         occupancyRate: total > 0 ? ((occupied / total) * 100).toFixed(1) + '%' : '0%'
       },
       rows,
@@ -115,7 +117,8 @@ router.get('/statistics', authenticate, async (req, res) => {
         COUNT(*) as total,
         SUM(CASE WHEN status = '空闲' THEN 1 ELSE 0 END) as available,
         SUM(CASE WHEN status = '已占用' THEN 1 ELSE 0 END) as occupied,
-        SUM(CASE WHEN status = '维修中' THEN 1 ELSE 0 END) as maintenance
+        SUM(CASE WHEN status = '维修中' THEN 1 ELSE 0 END) as maintenance,
+        SUM(CASE WHEN status = '预留中' THEN 1 ELSE 0 END) as reserved
       FROM plots
     `);
     
@@ -124,7 +127,8 @@ router.get('/statistics', authenticate, async (req, res) => {
         area,
         COUNT(*) as total,
         SUM(CASE WHEN status = '空闲' THEN 1 ELSE 0 END) as available,
-        SUM(CASE WHEN status = '已占用' THEN 1 ELSE 0 END) as occupied
+        SUM(CASE WHEN status = '已占用' THEN 1 ELSE 0 END) as occupied,
+        SUM(CASE WHEN status = '预留中' THEN 1 ELSE 0 END) as reserved
       FROM plots 
       GROUP BY area 
       ORDER BY area
@@ -136,6 +140,7 @@ router.get('/statistics', authenticate, async (req, res) => {
         available: stats.available,
         occupied: stats.occupied,
         maintenance: stats.maintenance,
+        reserved: stats.reserved,
         occupancyRate: stats.total > 0 ? ((stats.occupied / stats.total) * 100).toFixed(1) + '%' : '0%'
       },
       byArea: areaStats
@@ -185,7 +190,33 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
       LIMIT 5
     `, [req.params.id]);
     
-    success(res, { ...plot, payments, appointments });
+    const contracts = await all(`
+      SELECT c.*,
+             ct.name as contact_name,
+             ct.phone as contact_phone,
+             d.name as deceased_name
+      FROM contracts c
+      LEFT JOIN contacts ct ON c.contact_id = ct.id
+      LEFT JOIN deceased d ON c.deceased_id = d.id
+      WHERE c.plot_id = ?
+      ORDER BY c.created_at DESC
+      LIMIT 5
+    `, [req.params.id]);
+    
+    const statusNames = {
+      draft: '草稿',
+      reserved: '预留中',
+      signed: '已签约',
+      effective: '已生效',
+      voided: '已作废'
+    };
+    
+    const contractsWithNames = contracts.map(c => ({
+      ...c,
+      status_name: statusNames[c.status] || c.status
+    }));
+    
+    success(res, { ...plot, payments, appointments, contracts: contractsWithNames });
   } catch (err) {
     error(res, err.message, 500);
   }

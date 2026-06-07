@@ -13,7 +13,10 @@ const RESOURCE_TYPES = {
   MAINTENANCE_ORDER: 'maintenance_order',
   FESTIVAL_SCHEDULE: 'festival_schedule',
   FESTIVAL_TIME_SLOT: 'festival_time_slot',
-  FESTIVAL_STAFF_SCHEDULE: 'festival_staff_schedule'
+  FESTIVAL_STAFF_SCHEDULE: 'festival_staff_schedule',
+  CONTRACT: 'contract',
+  CONTRACT_FEE_ITEM: 'contract_fee_item',
+  PLOT_RESERVATION: 'plot_reservation'
 };
 
 const ACTIONS = {
@@ -59,7 +62,10 @@ const generateSummary = (resourceType, action, data, oldData = null) => {
     maintenance_order: '维修工单',
     festival_schedule: '节日排班',
     festival_time_slot: '时段容量',
-    festival_staff_schedule: '工作人员排班'
+    festival_staff_schedule: '工作人员排班',
+    contract: '合同',
+    contract_fee_item: '合同费用明细',
+    plot_reservation: '墓位预留'
   };
 
   const actionNames = {

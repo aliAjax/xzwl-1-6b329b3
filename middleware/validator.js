@@ -273,6 +273,77 @@ const festivalQueryByDateValidation = [
   validate
 ];
 
+const contractCreateValidation = [
+  body('plot_id').isInt().withMessage('墓位ID无效'),
+  body('contact_id').optional({ checkFalsy: true }).isInt().withMessage('联系人ID无效'),
+  body('deceased_id').optional({ checkFalsy: true }).isInt().withMessage('逝者ID无效'),
+  body('plot_price').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('墓位价格无效'),
+  body('management_fee').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('管理费金额无效'),
+  body('management_fee_years').optional({ checkFalsy: true }).isInt({ min: 0 }).withMessage('管理年限无效'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const contractUpdateValidation = [
+  body('contact_id').optional({ checkFalsy: true }).isInt().withMessage('联系人ID无效'),
+  body('deceased_id').optional({ checkFalsy: true }).isInt().withMessage('逝者ID无效'),
+  body('plot_price').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('墓位价格无效'),
+  body('management_fee').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('管理费金额无效'),
+  body('management_fee_years').optional({ checkFalsy: true }).isInt({ min: 0 }).withMessage('管理年限无效'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const contractReserveValidation = [
+  body('plot_id').isInt().withMessage('墓位ID无效'),
+  body('contact_name').notEmpty().withMessage('联系人姓名不能为空'),
+  body('contact_phone').notEmpty().withMessage('联系电话不能为空'),
+  body('reserve_days').optional({ checkFalsy: true }).isInt({ min: 1, max: 365 }).withMessage('预留天数无效，范围1-365天'),
+  body('plot_price').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('墓位价格无效'),
+  body('management_fee').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('管理费金额无效'),
+  body('management_fee_years').optional({ checkFalsy: true }).isInt({ min: 0 }).withMessage('管理年限无效'),
+  validate
+];
+
+const contractSignValidation = [
+  body('contact_id').isInt().withMessage('联系人ID无效'),
+  body('deceased_id').optional({ checkFalsy: true }).isInt().withMessage('逝者ID无效'),
+  body('plot_price').isFloat({ min: 0 }).withMessage('墓位价格无效'),
+  body('management_fee').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('管理费金额无效'),
+  body('management_fee_years').optional({ checkFalsy: true }).isInt({ min: 0 }).withMessage('管理年限无效'),
+  body('fee_items').optional({ checkFalsy: true }).isArray().withMessage('费用明细必须是数组'),
+  body('fee_items.*.fee_type').notEmpty().withMessage('费用类型不能为空'),
+  body('fee_items.*.fee_category').isIn(['购墓款', '管理费', '其他']).withMessage('费用分类无效'),
+  body('fee_items.*.amount').isFloat({ min: 0 }).withMessage('费用金额无效'),
+  validate
+];
+
+const contractPayValidation = [
+  body('amount').isFloat({ min: 0.01 }).withMessage('付款金额无效'),
+  body('payment_method').notEmpty().withMessage('付款方式不能为空'),
+  body('fee_category').isIn(['购墓款', '管理费']).withMessage('费用分类无效'),
+  body('payment_date').optional({ checkFalsy: true }).isISO8601().withMessage('付款日期格式无效'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const contractVoidValidation = [
+  body('void_reason').notEmpty().withMessage('作废原因不能为空'),
+  validate
+];
+
+const contractQueryValidation = [
+  query('status').optional({ checkFalsy: true }).isIn(['draft', 'reserved', 'signed', 'effective', 'voided']).withMessage('合同状态无效'),
+  query('plot_id').optional({ checkFalsy: true }).isInt().withMessage('墓位ID无效'),
+  query('contact_id').optional({ checkFalsy: true }).isInt().withMessage('联系人ID无效'),
+  query('keyword').optional({ checkFalsy: true }).notEmpty().withMessage('搜索关键词不能为空'),
+  query('start_date').optional({ checkFalsy: true }).isISO8601().withMessage('开始日期格式无效'),
+  query('end_date').optional({ checkFalsy: true }).isISO8601().withMessage('结束日期格式无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -309,5 +380,12 @@ module.exports = {
   festivalTimeSlotCreateValidation,
   festivalTimeSlotUpdateValidation,
   festivalStaffScheduleCreateValidation,
-  festivalQueryByDateValidation
+  festivalQueryByDateValidation,
+  contractCreateValidation,
+  contractUpdateValidation,
+  contractReserveValidation,
+  contractSignValidation,
+  contractPayValidation,
+  contractVoidValidation,
+  contractQueryValidation
 };

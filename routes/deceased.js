@@ -1,11 +1,52 @@
 const express = require('express');
-const { run, get, paginateQuery } = require('../utils/dbHelper');
+const { run, get, paginateQuery, all } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { deceasedCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
+
+const checkPlotReservation = async (plotId) => {
+  const activeReservation = await get(`
+    SELECT r.id, r.expires_at, c.contract_no
+    FROM plot_reservations r
+    INNER JOIN contracts c ON r.contract_id = c.id
+    WHERE r.plot_id = ? 
+      AND r.status = 'active' 
+      AND c.status != 'voided'
+      AND c.status != 'effective'
+    LIMIT 1
+  `, [plotId]);
+
+  if (activeReservation) {
+    const moment = require('moment');
+    if (moment(activeReservation.expires_at).isAfter(moment())) {
+      return { 
+        reserved: true, 
+        reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}` 
+      };
+    }
+  }
+
+  const activeContract = await get(`
+    SELECT id, contract_no, status
+    FROM contracts 
+    WHERE plot_id = ? 
+      AND status IN ('reserved', 'signed')
+    LIMIT 1
+  `, [plotId]);
+
+  if (activeContract) {
+    const statusNames = { reserved: '预留中', signed: '已签约' };
+    return { 
+      reserved: true, 
+      reason: `墓位已关联${statusNames[activeContract.status]}合同${activeContract.contract_no}` 
+    };
+  }
+
+  return { reserved: false };
+};
 
 router.get('/', authenticate, async (req, res) => {
   try {
@@ -78,6 +119,15 @@ router.post('/', authenticate, deceasedCreateValidation, async (req, res) => {
       if (!plot) {
         return error(res, '墓位不存在', 400);
       }
+      
+      const reservation = await checkPlotReservation(plot_id);
+      if (reservation.reserved) {
+        return error(res, reservation.reason + '，请先通过合同流程处理', 400);
+      }
+      
+      if (plot.status === '维修中') {
+        return error(res, '该墓位正在维修中，不能占用', 400);
+      }
     }
     
     const result = await run(
@@ -112,6 +162,15 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plot_id]);
       if (!plot) {
         return error(res, '新墓位不存在', 400);
+      }
+      
+      const reservation = await checkPlotReservation(plot_id);
+      if (reservation.reserved) {
+        return error(res, reservation.reason + '，请先通过合同流程处理', 400);
+      }
+      
+      if (plot.status === '维修中') {
+        return error(res, '该墓位正在维修中，不能占用', 400);
       }
       
       if (existing.plot_id) {

@@ -264,6 +264,204 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
     });
     log('festival_appointment_slots 表已就绪');
 
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS contracts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_no TEXT UNIQUE NOT NULL,
+        plot_id INTEGER NOT NULL,
+        contact_id INTEGER,
+        deceased_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'draft',
+        plot_price REAL DEFAULT 0,
+        management_fee REAL DEFAULT 0,
+        management_fee_years INTEGER DEFAULT 0,
+        total_amount REAL DEFAULT 0,
+        paid_amount REAL DEFAULT 0,
+        reserved_at TEXT,
+        reserved_expires_at TEXT,
+        signed_at TEXT,
+        effective_at TEXT,
+        voided_at TEXT,
+        void_reason TEXT,
+        remark TEXT,
+        created_by INTEGER,
+        created_by_name TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (contact_id) REFERENCES contacts(id),
+        FOREIGN KEY (deceased_id) REFERENCES deceased(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('contracts 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS contract_fee_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id INTEGER NOT NULL,
+        fee_type TEXT NOT NULL,
+        fee_category TEXT NOT NULL,
+        amount REAL NOT NULL DEFAULT 0,
+        quantity INTEGER DEFAULT 1,
+        unit_price REAL DEFAULT 0,
+        description TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (contract_id) REFERENCES contracts(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('contract_fee_items 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS plot_reservations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plot_id INTEGER NOT NULL,
+        contract_id INTEGER NOT NULL,
+        contact_name TEXT,
+        contact_phone TEXT,
+        reserved_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (contract_id) REFERENCES contracts(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('plot_reservations 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS contract_status_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id INTEGER NOT NULL,
+        from_status TEXT NOT NULL,
+        to_status TEXT NOT NULL,
+        operator_id INTEGER,
+        operator_name TEXT,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (contract_id) REFERENCES contracts(id),
+        FOREIGN KEY (operator_id) REFERENCES users(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('contract_status_logs 表已就绪');
+
+    const hasContractId = await checkColumn('payments', 'contract_id');
+    if (!hasContractId) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE payments ADD COLUMN contract_id INTEGER`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 payments.contract_id 字段');
+    } else {
+      log('payments.contract_id 字段已存在，跳过');
+    }
+
+    const hasFeeCategory = await checkColumn('payments', 'fee_category');
+    if (!hasFeeCategory) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE payments ADD COLUMN fee_category TEXT DEFAULT '管理费'`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 payments.fee_category 字段');
+    } else {
+      log('payments.fee_category 字段已存在，跳过');
+    }
+
+    const nullFeeCategoryCount = await get('SELECT COUNT(*) as count FROM payments WHERE fee_category IS NULL');
+    if (nullFeeCategoryCount.count > 0) {
+      await run("UPDATE payments SET fee_category = '管理费' WHERE fee_category IS NULL");
+      log(`已更新 ${nullFeeCategoryCount.count} 条历史缴费记录的 fee_category 为 管理费`);
+    }
+
+    const existingDeceasedWithPlot = await all(`
+      SELECT d.id as deceased_id, d.plot_id, d.created_at as deceased_created_at,
+             p.price as plot_price, p.plot_number,
+             c.id as contact_id, c.name as contact_name
+      FROM deceased d
+      INNER JOIN plots p ON d.plot_id = p.id
+      LEFT JOIN contacts c ON d.id = c.deceased_id
+      WHERE d.plot_id IS NOT NULL
+        AND d.id NOT IN (SELECT deceased_id FROM contracts WHERE deceased_id IS NOT NULL AND status != 'voided')
+    `);
+
+    if (existingDeceasedWithPlot.length > 0) {
+      log(`发现 ${existingDeceasedWithPlot.length} 条历史逝者占用墓位数据，正在创建兼容合同...`);
+      
+      let createdCount = 0;
+      for (const item of existingDeceasedWithPlot) {
+        try {
+          const existingContract = await get(`
+            SELECT id FROM contracts 
+            WHERE plot_id = ? AND deceased_id = ? AND status = 'effective'
+          `, [item.plot_id, item.deceased_id]);
+          
+          if (existingContract) {
+            continue;
+          }
+          
+          const contractNo = `HTLS${moment(item.deceased_created_at || moment()).format('YYYYMMDD')}${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
+          const plotPrice = item.plot_price || 0;
+          const totalAmount = plotPrice;
+          
+          const contractResult = await run(`
+            INSERT INTO contracts (
+              contract_no, plot_id, contact_id, deceased_id, status,
+              plot_price, management_fee, management_fee_years, total_amount, paid_amount,
+              signed_at, effective_at,
+              remark, created_by, created_by_name,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'effective', ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            contractNo, item.plot_id, item.contact_id, item.deceased_id,
+            plotPrice, totalAmount, totalAmount,
+            item.deceased_created_at, item.deceased_created_at,
+            '历史数据兼容-自动生成合同', 1, '系统',
+            item.deceased_created_at, item.deceased_created_at
+          ]);
+          
+          if (plotPrice > 0) {
+            await run(`
+              INSERT INTO contract_fee_items (contract_id, fee_type, fee_category, amount, description)
+              VALUES (?, '墓位款', '购墓款', ?, '历史墓位购买费用')
+            `, [contractResult.id, plotPrice]);
+          }
+          
+          await run(`
+            INSERT INTO contract_status_logs (contract_id, from_status, to_status, operator_id, operator_name, remark, created_at)
+            VALUES (?, 'draft', 'effective', ?, '系统', ?, ?)
+          `, [contractResult.id, 1, '历史数据兼容-直接生效', item.deceased_created_at]);
+          
+          createdCount++;
+        } catch (e) {
+          log(`创建兼容合同时出错（逝者ID: ${item.deceased_id}）:`, e.message);
+        }
+      }
+      
+      log(`已为 ${createdCount} 条历史数据创建兼容合同`);
+    } else {
+      log('无需要处理的历史逝者占用墓位数据');
+    }
+
+    const existingPaymentsWithoutCategory = await get('SELECT COUNT(*) as count FROM payments WHERE fee_category IS NULL OR fee_category = ?', ['管理费']);
+    log(`当前缴费记录中，管理费类型: ${existingPaymentsWithoutCategory.count} 条`);
+
     log('');
     log('数据库迁移完成！');
     if (exitOnComplete) {

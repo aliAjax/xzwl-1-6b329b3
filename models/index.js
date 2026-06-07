@@ -27,6 +27,76 @@ const createTables = () => {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )`);
 
+      db.run(`CREATE TABLE IF NOT EXISTS contracts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_no TEXT UNIQUE NOT NULL,
+        plot_id INTEGER NOT NULL,
+        contact_id INTEGER,
+        deceased_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'draft',
+        plot_price REAL DEFAULT 0,
+        management_fee REAL DEFAULT 0,
+        management_fee_years INTEGER DEFAULT 0,
+        total_amount REAL DEFAULT 0,
+        paid_amount REAL DEFAULT 0,
+        reserved_at TEXT,
+        reserved_expires_at TEXT,
+        signed_at TEXT,
+        effective_at TEXT,
+        voided_at TEXT,
+        void_reason TEXT,
+        remark TEXT,
+        created_by INTEGER,
+        created_by_name TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (contact_id) REFERENCES contacts(id),
+        FOREIGN KEY (deceased_id) REFERENCES deceased(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS contract_fee_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id INTEGER NOT NULL,
+        fee_type TEXT NOT NULL,
+        fee_category TEXT NOT NULL,
+        amount REAL NOT NULL DEFAULT 0,
+        quantity INTEGER DEFAULT 1,
+        unit_price REAL DEFAULT 0,
+        description TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (contract_id) REFERENCES contracts(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS plot_reservations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plot_id INTEGER NOT NULL,
+        contract_id INTEGER NOT NULL,
+        contact_name TEXT,
+        contact_phone TEXT,
+        reserved_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (contract_id) REFERENCES contracts(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS contract_status_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id INTEGER NOT NULL,
+        from_status TEXT NOT NULL,
+        to_status TEXT NOT NULL,
+        operator_id INTEGER,
+        operator_name TEXT,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (contract_id) REFERENCES contracts(id),
+        FOREIGN KEY (operator_id) REFERENCES users(id)
+      )`);
+
       db.run(`CREATE TABLE IF NOT EXISTS deceased (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -58,12 +128,14 @@ const createTables = () => {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         plot_id INTEGER NOT NULL,
         contact_id INTEGER,
+        contract_id INTEGER,
         amount REAL NOT NULL,
         payment_date TEXT,
         start_date TEXT,
         due_date TEXT,
         status TEXT DEFAULT '未缴',
         payment_method TEXT,
+        fee_category TEXT DEFAULT '管理费',
         remark TEXT,
         bill_type TEXT DEFAULT 'manual',
         bill_year INTEGER,
@@ -71,6 +143,7 @@ const createTables = () => {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (plot_id) REFERENCES plots(id),
         FOREIGN KEY (contact_id) REFERENCES contacts(id),
+        FOREIGN KEY (contract_id) REFERENCES contracts(id),
         FOREIGN KEY (bill_batch_id) REFERENCES bill_batches(id)
       )`);
 
