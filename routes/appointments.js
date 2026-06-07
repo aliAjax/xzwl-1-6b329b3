@@ -334,28 +334,29 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       return error(res, '预约记录不存在', 404);
     }
     
-    if (contact_id) {
+    if (contact_id !== undefined) {
       const contact = await get('SELECT id FROM contacts WHERE id = ?', [contact_id]);
       if (!contact) {
         return error(res, '联系人不存在', 400);
       }
     }
     
-    if (plot_id) {
+    if (plot_id !== undefined) {
       const plot = await get('SELECT id FROM plots WHERE id = ?', [plot_id]);
       if (!plot) {
         return error(res, '墓位不存在', 400);
       }
     }
 
-    const newDate = appointment_date || existing.appointment_date;
+    const newDate = appointment_date !== undefined ? appointment_date : existing.appointment_date;
     const newTime = appointment_time !== undefined ? appointment_time : existing.appointment_time;
     const newNumberOfPeople = number_of_people !== undefined ? number_of_people : existing.number_of_people;
-    const newStatus = status || existing.status;
+    const newStatus = status !== undefined ? status : existing.status;
 
-    const dateOrTimeChanged = (appointment_date && appointment_date !== existing.appointment_date) || 
+    const dateOrTimeChanged = (appointment_date !== undefined && appointment_date !== existing.appointment_date) || 
                               (appointment_time !== undefined && appointment_time !== existing.appointment_time);
     const peopleChanged = number_of_people !== undefined && number_of_people !== existing.number_of_people;
+    const statusChanged = status !== undefined && status !== existing.status;
 
     if (dateOrTimeChanged || peopleChanged) {
       const oldSlot = await findMatchingTimeSlot(existing.appointment_date, existing.appointment_time);
@@ -385,11 +386,11 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       }
     }
 
-    if (status && status !== existing.status && ['已完成', '已取消'].includes(status)) {
+    if (statusChanged && ['已完成', '已取消'].includes(newStatus)) {
       await unlinkAppointmentFromSlot(id);
     }
 
-    if (status && status !== existing.status && ['待确认', '已确认'].includes(status)) {
+    if (statusChanged && ['已完成', '已取消'].includes(existing.status) && ['待确认', '已确认'].includes(newStatus)) {
       const slot = await findMatchingTimeSlot(newDate, newTime);
       if (slot) {
         const capacityCheck = await checkCapacity(newDate, newTime, newNumberOfPeople);
@@ -400,16 +401,51 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       }
     }
     
-    await run(
-      'UPDATE appointments SET contact_id = ?, plot_id = ?, appointment_date = ?, appointment_time = ?, number_of_people = ?, status = ?, vehicle_number = ?, remark = ? WHERE id = ?',
-      [contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark, id]
-    );
+    const updateFields = [];
+    const updateParams = [];
+
+    if (contact_id !== undefined) {
+      updateFields.push('contact_id = ?');
+      updateParams.push(contact_id);
+    }
+    if (plot_id !== undefined) {
+      updateFields.push('plot_id = ?');
+      updateParams.push(plot_id);
+    }
+    if (appointment_date !== undefined) {
+      updateFields.push('appointment_date = ?');
+      updateParams.push(appointment_date);
+    }
+    if (appointment_time !== undefined) {
+      updateFields.push('appointment_time = ?');
+      updateParams.push(appointment_time);
+    }
+    if (number_of_people !== undefined) {
+      updateFields.push('number_of_people = ?');
+      updateParams.push(number_of_people);
+    }
+    if (status !== undefined) {
+      updateFields.push('status = ?');
+      updateParams.push(status);
+    }
+    if (vehicle_number !== undefined) {
+      updateFields.push('vehicle_number = ?');
+      updateParams.push(vehicle_number);
+    }
+    if (remark !== undefined) {
+      updateFields.push('remark = ?');
+      updateParams.push(remark);
+    }
+
+    updateParams.push(id);
+
+    await run(`UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`, updateParams);
 
     const newData = { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark };
     let action = ACTIONS.UPDATE;
     let summary;
 
-    if (existing.status !== status) {
+    if (existing.status !== newStatus) {
       action = ACTIONS.STATUS_CHANGE;
       summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
     } else {
