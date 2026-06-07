@@ -299,55 +299,7 @@ router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
         }
       }
     }
-    
-    if (finalContractId && status === '已缴') {
-      const contract = await get('SELECT id, status, total_amount, paid_amount FROM contracts WHERE id = ?', [finalContractId]);
-      if (contract && contract.status !== 'voided') {
-        const newPaidAmount = contract.paid_amount + amount;
-        
-        await run(`
-          UPDATE contracts SET 
-            paid_amount = ?,
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-        `, [newPaidAmount, finalContractId]);
-        
-        if (newPaidAmount >= contract.total_amount && contract.status === 'signed') {
-          const { run, get } = require('../utils/dbHelper');
-          const effectiveAt = moment().format('YYYY-MM-DD HH:mm:ss');
-          
-          const contractDetail = await get(`
-            SELECT c.*, p.status as plot_status
-            FROM contracts c
-            LEFT JOIN plots p ON c.plot_id = p.id
-            WHERE c.id = ?
-          `, [finalContractId]);
-          
-          if (contractDetail) {
-            const occupyingDeceased = await get(`
-              SELECT id, name FROM deceased WHERE plot_id = ? AND id != COALESCE(?, 0) LIMIT 1
-            `, [contractDetail.plot_id, contractDetail.deceased_id]);
-            
-            if (!occupyingDeceased) {
-              await run(`
-                UPDATE contracts SET 
-                  status = 'effective', 
-                  effective_at = ?,
-                  updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-              `, [effectiveAt, finalContractId]);
-              
-              if (contractDetail.deceased_id) {
-                await run('UPDATE deceased SET plot_id = ? WHERE id = ?', [contractDetail.plot_id, contractDetail.deceased_id]);
-              }
-              
-              await run("UPDATE plots SET status = '已占用' WHERE id = ?", [contractDetail.plot_id]);
-            }
-          }
-        }
-      }
-    }
-    
+
     let finalBillYear = bill_year;
     if (!finalBillYear) {
       if (start_date) {
@@ -369,11 +321,62 @@ router.post('/', authenticate, paymentCreateValidation, async (req, res) => {
         return error(res, `${finalBillYear}年度已存在${typeDesc}的管理费缴费记录，请勿重复录入`, 400);
       }
     }
-    
-    const result = await run(
-      'INSERT INTO payments (plot_id, contact_id, contract_id, fee_category, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [plot_id, req.body.contact_id || contact_id, finalContractId, finalFeeCategory, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark, bill_type || 'manual', finalBillYear]
-    );
+
+    const result = await runInTransaction(async () => {
+      const paymentResult = await run(
+        'INSERT INTO payments (plot_id, contact_id, contract_id, fee_category, amount, payment_date, start_date, due_date, status, payment_method, remark, bill_type, bill_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [plot_id, req.body.contact_id || contact_id, finalContractId, finalFeeCategory, amount, payment_date, start_date, due_date, status || '未缴', payment_method, remark, bill_type || 'manual', finalBillYear]
+      );
+
+      if (finalContractId && status === '已缴') {
+        const contract = await get('SELECT id, status, total_amount, paid_amount FROM contracts WHERE id = ?', [finalContractId]);
+        if (contract && contract.status !== 'voided') {
+          const newPaidAmount = contract.paid_amount + amount;
+
+          await run(`
+            UPDATE contracts SET 
+              paid_amount = ?,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `, [newPaidAmount, finalContractId]);
+
+          if (newPaidAmount >= contract.total_amount && contract.status === 'signed') {
+            const effectiveAt = moment().format('YYYY-MM-DD HH:mm:ss');
+
+            const contractDetail = await get(`
+              SELECT c.*, p.status as plot_status
+              FROM contracts c
+              LEFT JOIN plots p ON c.plot_id = p.id
+              WHERE c.id = ?
+            `, [finalContractId]);
+
+            if (contractDetail) {
+              const occupyingDeceased = await get(`
+                SELECT id, name FROM deceased WHERE plot_id = ? AND id != COALESCE(?, 0) LIMIT 1
+              `, [contractDetail.plot_id, contractDetail.deceased_id]);
+
+              if (!occupyingDeceased) {
+                await run(`
+                  UPDATE contracts SET 
+                    status = 'effective', 
+                    effective_at = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                  WHERE id = ?
+                `, [effectiveAt, finalContractId]);
+
+                if (contractDetail.deceased_id) {
+                  await run('UPDATE deceased SET plot_id = ? WHERE id = ?', [contractDetail.plot_id, contractDetail.deceased_id]);
+                }
+
+                await run("UPDATE plots SET status = '已占用' WHERE id = ?", [contractDetail.plot_id]);
+              }
+            }
+          }
+        }
+      }
+
+      return paymentResult;
+    });
 
     const summaryData = { 
       ...req.body, 
