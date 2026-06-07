@@ -256,7 +256,7 @@ router.post('/:id/complete', authenticate, idParamValidation, async (req, res) =
     const operator_id = req.user.id;
     const completedAt = moment().format('YYYY-MM-DD HH:mm:ss');
     
-    const existing = await get('SELECT id, status FROM service_orders WHERE id = ?', [id]);
+    const existing = await get('SELECT id, status, remark FROM service_orders WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '服务订单不存在', 404);
     }
@@ -265,11 +265,14 @@ router.post('/:id/complete', authenticate, idParamValidation, async (req, res) =
       return error(res, '当前状态不允许标记完成', 400);
     }
     
-    const finalRemark = remark ? `${existing.remark || ''} ${remark}`.trim() : existing.remark;
+    let finalRemark = existing.remark || '';
+    if (remark) {
+      finalRemark = finalRemark ? `${finalRemark} ${remark}` : remark;
+    }
     
     await run(
       'UPDATE service_orders SET status = "已完成", operator_id = ?, completed_at = ?, remark = ? WHERE id = ?',
-      [operator_id, completedAt, finalRemark, id]
+      [operator_id, completedAt, finalRemark || null, id]
     );
     success(res, null, '服务订单已完成');
   } catch (err) {
@@ -300,25 +303,50 @@ router.post('/:id/cancel', authenticate, idParamValidation, async (req, res) => 
   }
 });
 
+const validateStatusTransition = (currentStatus, newStatus) => {
+  const allowedTransitions = {
+    '待处理': ['处理中', '已完成', '已取消'],
+    '处理中': ['已完成', '已取消', '待处理'],
+    '已完成': [],
+    '已取消': []
+  };
+  
+  const allowed = allowedTransitions[currentStatus] || [];
+  return allowed.includes(newStatus);
+};
+
 router.put('/:id/status', authenticate, idParamValidation, serviceOrderStatusValidation, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, remark } = req.body;
     const operator_id = req.user.id;
     
-    const existing = await get('SELECT id, status FROM service_orders WHERE id = ?', [id]);
+    const existing = await get('SELECT id, status, remark FROM service_orders WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '服务订单不存在', 404);
     }
     
-    const updateData = { status, operator_id };
+    if (existing.status === status) {
+      return success(res, null, '订单状态未变更');
+    }
+    
+    if (!validateStatusTransition(existing.status, status)) {
+      return error(res, `不允许从"${existing.status}"状态变更为"${status}"状态`, 400);
+    }
+    
+    let completed_at = null;
     if (status === '已完成') {
-      updateData.completed_at = moment().format('YYYY-MM-DD HH:mm:ss');
+      completed_at = moment().format('YYYY-MM-DD HH:mm:ss');
+    }
+    
+    let finalRemark = existing.remark || '';
+    if (remark) {
+      finalRemark = finalRemark ? `${finalRemark} ${remark}` : remark;
     }
     
     await run(
-      'UPDATE service_orders SET status = ?, operator_id = ?, completed_at = ? WHERE id = ?',
-      [status, operator_id, updateData.completed_at || null, id]
+      'UPDATE service_orders SET status = ?, operator_id = ?, completed_at = ?, remark = ? WHERE id = ?',
+      [status, operator_id, completed_at, finalRemark || null, id]
     );
     
     success(res, null, '订单状态更新成功');
