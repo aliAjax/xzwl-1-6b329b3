@@ -8,7 +8,8 @@ const RESOURCE_TYPES = {
   PAYMENT: 'payment',
   APPOINTMENT: 'appointment',
   VISIT_RECORD: 'visit_record',
-  BILL_BATCH: 'bill_batch'
+  BILL_BATCH: 'bill_batch',
+  REMINDER_BATCH: 'reminder_batch'
 };
 
 const ACTIONS = {
@@ -49,7 +50,8 @@ const generateSummary = (resourceType, action, data, oldData = null) => {
     payment: '缴费',
     appointment: '预约',
     visit_record: '沟通记录',
-    bill_batch: '账单批次'
+    bill_batch: '账单批次',
+    reminder_batch: '提醒批次'
   };
 
   const actionNames = {

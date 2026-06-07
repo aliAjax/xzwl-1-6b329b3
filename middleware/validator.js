@@ -135,6 +135,33 @@ const billConfigUpdateValidation = [
   validate
 ];
 
+const reminderGenerateValidation = [
+  body('reminder_days').optional({ checkFalsy: true }).isInt({ min: 1, max: 365 }).withMessage('提醒天数无效，范围1-365'),
+  body('area').optional({ checkFalsy: true }).notEmpty().withMessage('区域不能为空'),
+  body('plot_ids').optional({ checkFalsy: true }).isArray().withMessage('墓位ID列表必须是数组'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const reminderBatchQueryValidation = [
+  query('start_date').optional({ checkFalsy: true }).isISO8601().withMessage('开始日期格式无效'),
+  query('end_date').optional({ checkFalsy: true }).isISO8601().withMessage('结束日期格式无效'),
+  query('status').optional({ checkFalsy: true }).isIn(['processing', 'completed', 'failed']).withMessage('状态无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
+const reminderDetailQueryValidation = [
+  query('contact_name').optional({ checkFalsy: true }).notEmpty().withMessage('联系人姓名不能为空'),
+  query('contact_phone').optional({ checkFalsy: true }).notEmpty().withMessage('联系电话不能为空'),
+  query('plot_number').optional({ checkFalsy: true }).notEmpty().withMessage('墓位编号不能为空'),
+  query('is_exception').optional({ checkFalsy: true }).isIn(['0', '1']).withMessage('异常标记无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -154,5 +181,8 @@ module.exports = {
   billPreviewValidation,
   billGenerateValidation,
   billBatchQueryValidation,
-  billConfigUpdateValidation
+  billConfigUpdateValidation,
+  reminderGenerateValidation,
+  reminderBatchQueryValidation,
+  reminderDetailQueryValidation
 };

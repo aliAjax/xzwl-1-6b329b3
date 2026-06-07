@@ -190,6 +190,50 @@ const createTables = () => {
         ip_address TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS reminder_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_no TEXT UNIQUE NOT NULL,
+        reminder_days INTEGER NOT NULL DEFAULT 30,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        total_count INTEGER DEFAULT 0,
+        success_count INTEGER DEFAULT 0,
+        skip_count INTEGER DEFAULT 0,
+        exception_count INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'processing',
+        operator_id INTEGER NOT NULL,
+        operator_name TEXT NOT NULL,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (operator_id) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS reminder_details (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER NOT NULL,
+        payment_id INTEGER NOT NULL,
+        plot_id INTEGER NOT NULL,
+        plot_number TEXT NOT NULL,
+        area TEXT,
+        contact_id INTEGER,
+        contact_name TEXT,
+        contact_phone TEXT,
+        deceased_name TEXT,
+        due_date TEXT NOT NULL,
+        amount REAL NOT NULL,
+        days_remaining INTEGER NOT NULL,
+        is_overdue INTEGER NOT NULL DEFAULT 0,
+        urgency TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        is_exception INTEGER NOT NULL DEFAULT 0,
+        exception_type TEXT,
+        exception_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (batch_id) REFERENCES reminder_batches(id),
+        FOREIGN KEY (payment_id) REFERENCES payments(id),
+        FOREIGN KEY (plot_id) REFERENCES plots(id)
       )`, (err) => {
         if (err) reject(err);
         else resolve();
