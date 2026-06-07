@@ -155,6 +155,42 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
       log(`注意：仍有 ${stillNullBillYearCount.count} 条记录 bill_year 为空（无 start_date 和 due_date），需手工处理`);
     }
 
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS maintenance_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plot_id INTEGER NOT NULL,
+        plot_number TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        plan_date TEXT,
+        handler_id INTEGER,
+        handler_name TEXT,
+        process TEXT,
+        result TEXT,
+        status TEXT NOT NULL DEFAULT '待处理',
+        created_by INTEGER NOT NULL,
+        created_by_name TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (handler_id) REFERENCES users(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('maintenance_orders 表已就绪');
+
+    const maintenanceOrderColumns = await new Promise((resolve, reject) => {
+      db.all(`PRAGMA table_info(maintenance_orders)`, (err, columns) => {
+        if (err) reject(err);
+        else resolve(columns.map(c => c.name));
+      });
+    });
+    log(`maintenance_orders 表字段: ${maintenanceOrderColumns.join(', ')}`);
+
     log('');
     log('数据库迁移完成！');
     if (exitOnComplete) {

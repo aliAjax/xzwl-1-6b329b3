@@ -95,7 +95,7 @@ const importConfirmValidation = [
 ];
 
 const operationLogQueryValidation = [
-  query('resource_type').optional({ checkFalsy: true }).isIn(['plot', 'deceased', 'contact', 'payment', 'appointment', 'visit_record']).withMessage('资源类型无效'),
+  query('resource_type').optional({ checkFalsy: true }).isIn(['plot', 'deceased', 'contact', 'payment', 'appointment', 'visit_record', 'bill_batch', 'reminder_batch', 'maintenance_order']).withMessage('资源类型无效'),
   query('user_id').optional({ checkFalsy: true }).isInt().withMessage('操作人ID无效'),
   query('start_date').optional({ checkFalsy: true }).isISO8601().withMessage('开始日期格式无效'),
   query('end_date').optional({ checkFalsy: true }).isISO8601().withMessage('结束日期格式无效'),
@@ -162,6 +162,42 @@ const reminderDetailQueryValidation = [
   validate
 ];
 
+const maintenanceOrderCreateValidation = [
+  body('plot_id').isInt().withMessage('墓位ID无效'),
+  body('reason').notEmpty().withMessage('维修原因不能为空'),
+  body('plan_date').optional({ checkFalsy: true }).isISO8601().withMessage('计划完成日期格式无效'),
+  body('handler_id').optional({ checkFalsy: true }).isInt().withMessage('处理人ID无效'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
+const maintenanceOrderQueryValidation = [
+  query('status').optional({ checkFalsy: true }).isIn(['待处理', '处理中', '已完成', '已取消']).withMessage('状态无效'),
+  query('plot_id').optional({ checkFalsy: true }).isInt().withMessage('墓位ID无效'),
+  query('handler_id').optional({ checkFalsy: true }).isInt().withMessage('处理人ID无效'),
+  query('start_date').optional({ checkFalsy: true }).isISO8601().withMessage('开始日期格式无效'),
+  query('end_date').optional({ checkFalsy: true }).isISO8601().withMessage('结束日期格式无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
+const maintenanceOrderStartValidation = [
+  body('handler_id').optional({ checkFalsy: true }).isInt().withMessage('处理人ID无效'),
+  validate
+];
+
+const maintenanceOrderCompleteValidation = [
+  body('result').notEmpty().withMessage('完成结果不能为空'),
+  body('process').optional({ checkFalsy: true }).isString().withMessage('处理过程必须是字符串'),
+  validate
+];
+
+const maintenanceOrderCancelValidation = [
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('取消备注必须是字符串'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -184,5 +220,10 @@ module.exports = {
   billConfigUpdateValidation,
   reminderGenerateValidation,
   reminderBatchQueryValidation,
-  reminderDetailQueryValidation
+  reminderDetailQueryValidation,
+  maintenanceOrderCreateValidation,
+  maintenanceOrderQueryValidation,
+  maintenanceOrderStartValidation,
+  maintenanceOrderCompleteValidation,
+  maintenanceOrderCancelValidation
 };

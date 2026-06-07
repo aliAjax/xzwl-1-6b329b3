@@ -234,6 +234,28 @@ const createTables = () => {
         FOREIGN KEY (batch_id) REFERENCES reminder_batches(id),
         FOREIGN KEY (payment_id) REFERENCES payments(id),
         FOREIGN KEY (plot_id) REFERENCES plots(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS maintenance_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plot_id INTEGER NOT NULL,
+        plot_number TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        plan_date TEXT,
+        handler_id INTEGER,
+        handler_name TEXT,
+        process TEXT,
+        result TEXT,
+        status TEXT NOT NULL DEFAULT '待处理',
+        created_by INTEGER NOT NULL,
+        created_by_name TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        remark TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (handler_id) REFERENCES users(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
       )`, (err) => {
         if (err) reject(err);
         else resolve();

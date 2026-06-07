@@ -9,7 +9,8 @@ const RESOURCE_TYPES = {
   APPOINTMENT: 'appointment',
   VISIT_RECORD: 'visit_record',
   BILL_BATCH: 'bill_batch',
-  REMINDER_BATCH: 'reminder_batch'
+  REMINDER_BATCH: 'reminder_batch',
+  MAINTENANCE_ORDER: 'maintenance_order'
 };
 
 const ACTIONS = {
@@ -51,7 +52,8 @@ const generateSummary = (resourceType, action, data, oldData = null) => {
     appointment: '预约',
     visit_record: '沟通记录',
     bill_batch: '账单批次',
-    reminder_batch: '提醒批次'
+    reminder_batch: '提醒批次',
+    maintenance_order: '维修工单'
   };
 
   const actionNames = {
