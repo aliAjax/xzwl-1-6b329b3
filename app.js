@@ -16,6 +16,7 @@ const visitRecordRoutes = require('./routes/visitRecords');
 const dashboardRoutes = require('./routes/dashboard');
 const serviceItemRoutes = require('./routes/serviceItems');
 const serviceOrderRoutes = require('./routes/serviceOrders');
+const importRoutes = require('./routes/imports');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +36,7 @@ app.use('/api/visit-records', visitRecordRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/service-items', serviceItemRoutes);
 app.use('/api/service-orders', serviceOrderRoutes);
+app.use('/api/import', importRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({

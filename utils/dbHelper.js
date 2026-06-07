@@ -45,4 +45,43 @@ const paginateQuery = (baseSql, params = [], page = 1, pageSize = 10, orderBy = 
   });
 };
 
-module.exports = { run, get, all, paginateQuery };
+const beginTransaction = () => {
+  return new Promise((resolve, reject) => {
+    db.run('BEGIN TRANSACTION', (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+};
+
+const commitTransaction = () => {
+  return new Promise((resolve, reject) => {
+    db.run('COMMIT', (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+};
+
+const rollbackTransaction = () => {
+  return new Promise((resolve, reject) => {
+    db.run('ROLLBACK', (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+};
+
+const runInTransaction = async (operations) => {
+  try {
+    await beginTransaction();
+    const results = await operations();
+    await commitTransaction();
+    return results;
+  } catch (err) {
+    await rollbackTransaction();
+    throw err;
+  }
+};
+
+module.exports = { run, get, all, paginateQuery, beginTransaction, commitTransaction, rollbackTransaction, runInTransaction };

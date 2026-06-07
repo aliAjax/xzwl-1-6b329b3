@@ -83,6 +83,17 @@ const serviceOrderStatusValidation = [
   validate
 ];
 
+const importPreviewValidation = [
+  body('type').isIn(['plot', 'contact']).withMessage('导入类型无效，只能是 plot 或 contact'),
+  body('data').isArray({ min: 1 }).withMessage('导入数据不能为空且必须是数组'),
+  validate
+];
+
+const importConfirmValidation = [
+  body('import_token').notEmpty().withMessage('import_token 不能为空'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -95,5 +106,7 @@ module.exports = {
   serviceItemCreateValidation,
   serviceOrderCreateValidation,
   serviceOrderStatusValidation,
-  idParamValidation
+  idParamValidation,
+  importPreviewValidation,
+  importConfirmValidation
 };
