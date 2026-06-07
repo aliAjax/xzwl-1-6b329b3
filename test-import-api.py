@@ -98,6 +98,11 @@ def test_contact_preview(token):
                 'relationship': '儿子'
             },
             {
+                'name': '赵六',
+                'phone': '13800138000',
+                'relationship': '父亲'
+            },
+            {
                 'name': '',
                 'phone': '12345',
                 'deceased_id': 9999

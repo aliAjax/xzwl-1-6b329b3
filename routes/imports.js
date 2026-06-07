@@ -106,6 +106,8 @@ const validateContactItem = async (item, index, existingContacts, existingDeceas
     const phone = item.phone.trim();
     if (batchPhones.has(phone)) {
       errors.push(`手机号 ${phone} 在导入批次中重复`);
+    } else if (existingContacts.has(phone)) {
+      errors.push(`手机号 ${phone} 已存在`);
     } else {
       batchPhones.add(phone);
     }
@@ -205,7 +207,7 @@ router.post('/preview', authenticate, importPreviewValidation, async (req, res) 
     }));
 
     const fieldValidation = {
-      totalFields: type === 'plot' ? totalCount * 5 : totalCount * 3,
+      totalFields: type === 'plot' ? totalCount * 4 : totalCount * 2,
       validFields: 0,
       invalidFields: 0
     };
