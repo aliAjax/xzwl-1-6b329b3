@@ -1,5 +1,4 @@
 const moment = require('moment');
-const axios = require('axios');
 const { run, get, all, runInTransaction } = require('../utils/dbHelper');
 const { getSlotOccupancy, checkCapacity, linkAppointmentToSlotById, unlinkAppointmentFromSlot, findMatchingTimeSlot } = require('../utils/festivalHelper');
 
@@ -13,33 +12,36 @@ let testPlotId = null;
 let testSlotId = null;
 let testScheduleId = null;
 let timestamp = Date.now();
+const TEST_DATE = moment().add(60 + (timestamp % 20), 'days').format('YYYY-MM-DD');
 const MAX_RETRIES = 3;
 
 async function apiRequest(method, path, data = {}, params = {}) {
   if (!authToken) {
-    const login = await axios.post(`${API_URL}/auth/login`, {
-      username: 'admin',
-      password: 'admin123'
-    }, { timeout: 10000 });
-    if (login.data.code === 200) {
-      authToken = login.data.data.token;
+    const login = await fetchJson(`${API_URL}/auth/login`, {
+      method: 'POST',
+      body: JSON.stringify({
+        username: 'admin',
+        password: 'admin123'
+      })
+    });
+    if (login.code === 200) {
+      authToken = login.data.token;
+    } else {
+      throw new Error(`登录失败: ${login.message}`);
     }
   }
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const response = await axios({
+      const query = new URLSearchParams(params).toString();
+      return await fetchJson(`${API_URL}${path}${query ? `?${query}` : ''}`, {
         method,
-        url: `${API_URL}${path}`,
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json'
         },
-        data,
-        params,
-        timeout: 10000
+        body: method === 'GET' ? undefined : JSON.stringify(data)
       });
-      return response.data;
     } catch (err) {
       if (attempt === MAX_RETRIES - 1) throw err;
       await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
@@ -47,14 +49,22 @@ async function apiRequest(method, path, data = {}, params = {}) {
   }
 }
 
-async function apiWithFallback(dbOperation, apiMethod, apiPath, apiData) {
+async function fetchJson(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    const result = await apiRequest(apiMethod, apiPath, apiData);
-    return { source: 'api', data: result };
-  } catch (err) {
-    console.log(`   ⚠️  API调用失败，降级到直接数据库操作: ${err.message}`);
-    const result = await dbOperation();
-    return { source: 'db', data: result };
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      },
+      signal: controller.signal
+    });
+    const text = await response.text();
+    return text ? JSON.parse(text) : {};
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -282,7 +292,9 @@ const tests = [
                 INNER JOIN contracts c ON r.contract_id = c.id 
                 WHERE r.plot_id = ? AND r.status = 'active' AND c.status = 'reserved') as active_reservations,
                (SELECT COUNT(*) FROM contracts WHERE plot_id = ? AND status IN ('signed', 'effective')) as active_contracts
-      `, [plotId, plotId, plotId]);
+        FROM plots p
+        WHERE p.id = ?
+      `, [plotId, plotId, plotId, plotId]);
 
       if (availability.status !== '空闲' || availability.deceased_count > 0 || 
           availability.active_reservations > 0 || availability.active_contracts > 0) {
@@ -303,7 +315,7 @@ const tests = [
   }),
 
   test('3. 节日时段容量统计准确性', async () => {
-    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+    const testDate = TEST_DATE;
     const CAPACITY = 10;
 
     const schedule = await createFestivalSchedule(`单元测试节日${timestamp}`, testDate, CAPACITY);
@@ -327,14 +339,40 @@ const tests = [
   }),
 
   test('4. 真实API调用测试 - 预约创建与容量校验', async () => {
-    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+    const testDate = TEST_DATE;
     
     try {
+      const scheduleResult = await apiRequest('POST', '/festival-schedules', {
+        festival_name: `API测试节日${timestamp}`,
+        festival_type: 'custom',
+        start_date: testDate,
+        end_date: testDate,
+        description: 'API测试节日',
+        time_slots: [{
+          date: testDate,
+          start_time: '08:00',
+          end_time: '12:00',
+          capacity: 4,
+          remark: 'API测试时段'
+        }]
+      });
+      if (scheduleResult.code !== 200) {
+        throw new Error(`API创建排班失败: ${scheduleResult.message}`);
+      }
+      const apiScheduleId = scheduleResult.data.id;
+      const apiSlot = await get(
+        'SELECT id FROM festival_time_slots WHERE festival_schedule_id = ? ORDER BY id DESC LIMIT 1',
+        [apiScheduleId]
+      );
+      if (!apiSlot) {
+        throw new Error('API创建排班后未找到测试时段');
+      }
+
       const result = await apiRequest('POST', '/appointments', {
         appointment_date: testDate,
         appointment_time: '08:30',
         number_of_people: 2,
-        festival_time_slot_id: testSlotId,
+        festival_time_slot_id: apiSlot.id,
         remark: 'API测试预约'
       });
       
@@ -343,7 +381,7 @@ const tests = [
         const capacityInfo = result.data.capacity_info || {};
         console.log(`   ℹ️  API返回容量信息: booked=${capacityInfo.booked}, remaining=${capacityInfo.remaining}, capacity=${capacityInfo.capacity}`);
         
-        const dbOccupancy = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
+        const dbOccupancy = await getSlotOccupancy(apiSlot.id, testDate, '08:00', '12:00');
         console.log(`   ℹ️  数据库统计: booked=${dbOccupancy.total_people}`);
         
         if (capacityInfo.booked !== undefined && capacityInfo.booked !== dbOccupancy.total_people) {
@@ -351,15 +389,19 @@ const tests = [
         }
         console.log(`   ✅ API与数据库容量统计一致`);
       } else {
-        console.log(`   ⚠️  API创建预约返回: ${result.message}`);
+        throw new Error(`API创建预约失败: ${result.message}`);
       }
+      await run('DELETE FROM festival_appointment_slots WHERE time_slot_id = ?', [apiSlot.id]);
+      await run('DELETE FROM appointments WHERE appointment_date = ? AND remark = ?', [testDate, 'API测试预约']);
+      await run('DELETE FROM festival_time_slots WHERE festival_schedule_id = ?', [apiScheduleId]);
+      await run('DELETE FROM festival_schedules WHERE id = ?', [apiScheduleId]);
     } catch (err) {
-      console.log(`   ⚠️  跳过API测试（服务未启动）: ${err.message}`);
+      throw new Error(`真实API创建与容量校验失败: ${err.message}`);
     }
   }),
 
-  test('5. 容量接近上限时的并发预约控制（事务原子性）', async () => {
-    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+  test('5. 容量接近上限时的预约边界与统计一致性', async () => {
+    const testDate = TEST_DATE;
     const appointmentIds = [];
 
     for (let i = 0; i < 4; i++) {
@@ -380,62 +422,13 @@ const tests = [
 
     console.log(`   ℹ️  预约8人后 - 已用: ${midOccupancy.total_people}, 剩余: ${midCapacity.remaining}`);
 
-    async function tryBookWithTransaction(people = 2) {
-      let createdId = null;
-      try {
-        await runInTransaction(async () => {
-          const slot = await get(`
-            SELECT fts.*,
-                   (SELECT COALESCE(SUM(a.number_of_people), 0) 
-                    FROM appointments a 
-                    INNER JOIN festival_appointment_slots fas ON a.id = fas.appointment_id
-                    WHERE fas.time_slot_id = fts.id AND a.status IN ('待确认', '已确认')) as booked_people
-            FROM festival_time_slots fts WHERE fts.id = ?
-          `, [testSlotId]);
-          
-          const remaining = slot.capacity - (slot.booked_people || 0);
-          if (remaining < people) {
-            throw new Error(`容量不足，剩余${remaining}人，需要${people}人`);
-          }
-
-          const result = await run(
-            `INSERT INTO appointments (appointment_date, appointment_time, number_of_people, status, remark)
-             VALUES (?, ?, ?, '待确认', '事务并发测试')`,
-            [testDate, '09:30', people]
-          );
-          createdId = result.id;
-
-          await run(
-            `INSERT INTO festival_appointment_slots (appointment_id, time_slot_id, created_at)
-             VALUES (?, ?, ?)`,
-            [createdId, testSlotId, moment().format('YYYY-MM-DD HH:mm:ss')]
-          );
-        });
-        return { success: true, id: createdId };
-      } catch (err) {
-        if (createdId) {
-          await run('DELETE FROM festival_appointment_slots WHERE appointment_id = ?', [createdId]);
-          await run('DELETE FROM appointments WHERE id = ?', [createdId]);
-        }
-        throw err;
-      }
+    const fillCheck = await checkCapacity(testDate, '09:30', 2);
+    if (!fillCheck.isAvailable || fillCheck.remaining !== 2) {
+      throw new Error(`剩余2人时应允许2人预约，实际为${JSON.stringify(fillCheck)}`);
     }
-
-    const results = await Promise.allSettled([
-      tryBookWithTransaction(2),
-      tryBookWithTransaction(2),
-      tryBookWithTransaction(2)
-    ]);
-
-    const successCount = results.filter(r => r.status === 'fulfilled').length;
-    const successIds = results.filter(r => r.status === 'fulfilled').map(r => r.value.id);
-    appointmentIds.push(...successIds);
-
-    console.log(`   ℹ️  并发事务结果: 成功${successCount}个, 失败${results.length - successCount}个`);
-
-    if (successCount > 1) {
-      throw new Error(`并发预约应该最多成功1个，实际成功${successCount}个`);
-    }
+    const fillId = await createTestAppointment(testDate, '09:30', 2, '待确认');
+    await linkAppointmentToSlotById(fillId, testSlotId);
+    appointmentIds.push(fillId);
 
     const finalOccupancy = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
     if (finalOccupancy.total_people !== 10) {
@@ -445,6 +438,11 @@ const tests = [
     const finalCapacity = await checkCapacity(testDate, '09:00', 1);
     if (finalCapacity.remaining !== 0 || finalCapacity.isAvailable !== false) {
       throw new Error(`容量应已满，实际剩余${finalCapacity.remaining}`);
+    }
+
+    const overflowCapacity = await checkCapacity(testDate, '09:45', 1);
+    if (overflowCapacity.isAvailable) {
+      throw new Error('满员后1人预约应被容量检查拒绝');
     }
 
     const slots = await get(`
@@ -460,12 +458,12 @@ const tests = [
       throw new Error(`容量统计不一致，SQL计算剩余${calculatedRemaining}，函数计算${finalCapacity.remaining}`);
     }
 
-    console.log(`   ℹ️  并发预约控制正确 - 成功${successCount}个，最终已用: ${finalOccupancy.total_people}`);
+    console.log(`   ℹ️  容量边界控制正确，最终已用: ${finalOccupancy.total_people}`);
     console.log(`   ℹ️  容量统计一致 - SQL计算: ${slots.booked_people}/${slots.capacity}, 函数计算: ${finalOccupancy.total_people}/${finalCapacity.capacity}`);
   }),
 
   test('6. 预约取消后的容量释放与关联表完整性', async () => {
-    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+    const testDate = TEST_DATE;
 
     const beforeCancel = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
     console.log(`   ℹ️  取消前 - 已用: ${beforeCancel.total_people}, 预约数: ${beforeCancel.appointment_count}`);
@@ -539,7 +537,7 @@ const tests = [
   }),
 
   test('7. 容量满时的错误提示验证', async () => {
-    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+    const testDate = TEST_DATE;
 
     const currentOccupancy = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
     console.log(`   ℹ️  当前状态 - 已用: ${currentOccupancy.total_people}/10`);
@@ -608,7 +606,7 @@ const tests = [
   }),
 
   test('9. 并发数据一致性验证 - 多线程同时读取容量', async () => {
-    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+    const testDate = TEST_DATE;
     
     const readResults = await Promise.all([
       getSlotOccupancy(testSlotId, testDate, '08:00', '12:00'),
@@ -639,13 +637,18 @@ const tests = [
     console.log(`   ℹ️  容量状态: ${firstOccupancy.total_people}人/${capacityResults[0].capacity}容量`);
   }),
 
-  test('10. API层并发预约验证（如果服务运行中）', async () => {
-    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+  test('10. API层并发预约验证（容量接近上限）', async () => {
+    const testDate = TEST_DATE;
     
     try {
       console.log(`   🧪 测试真实API并发预约...`);
       
       const startTimes = [];
+      const before = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
+      if (before.total_people !== 10) {
+        throw new Error(`API并发验证前应为满员状态，实际为${before.total_people}`);
+      }
+
       const results = await Promise.allSettled([
         (async () => {
           startTimes.push(Date.now());
@@ -673,6 +676,7 @@ const tests = [
       console.log(`   ℹ️  请求时间差: ${timeDiff}ms`);
       
       const successCount = results.filter(r => r.status === 'fulfilled' && r.value.code === 200).length;
+      const failedResults = results.filter(r => r.status === 'fulfilled' && r.value.code !== 200);
       console.log(`   ℹ️  API并发结果: 成功${successCount}个, 失败${results.length - successCount}个`);
       
       results.forEach((r, i) => {
@@ -683,15 +687,32 @@ const tests = [
         }
       });
       
-      console.log(`   ✅ API层并发测试完成`);
-      
+      if (successCount !== 0) {
+        throw new Error(`满员时API并发预约应全部失败，实际成功${successCount}个`);
+      }
+      if (failedResults.length !== results.length) {
+        throw new Error('API并发预约应返回业务失败响应，而不是网络或运行时异常');
+      }
+      for (const r of failedResults) {
+        const message = r.value.message || '';
+        if (!message.includes('剩余容量') && !message.includes('已满')) {
+          throw new Error(`满员错误提示应包含容量信息，实际为: ${message}`);
+        }
+      }
+
+      const after = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
+      if (after.total_people !== before.total_people) {
+        throw new Error(`满员失败请求不应改变容量，前=${before.total_people}, 后=${after.total_people}`);
+      }
+
+      console.log(`   ✅ API层并发满员拒绝和容量不变验证通过`);
     } catch (err) {
-      console.log(`   ⚠️  跳过API并发测试: ${err.message}`);
+      throw new Error(`API层并发验证失败: ${err.message}`);
     }
   }),
 
   test('11. 清理测试数据', async () => {
-    const date = moment().add(60, 'days').format('YYYY-MM-DD');
+    const date = TEST_DATE;
     
     console.log(`   🧹 清理测试数据...`);
     

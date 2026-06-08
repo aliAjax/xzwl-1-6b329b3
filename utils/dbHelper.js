@@ -72,16 +72,33 @@ const rollbackTransaction = () => {
   });
 };
 
+let transactionQueue = Promise.resolve();
+
 const runInTransaction = async (operations) => {
-  try {
-    await beginTransaction();
-    const results = await operations();
-    await commitTransaction();
-    return results;
-  } catch (err) {
-    await rollbackTransaction();
-    throw err;
-  }
+  const execute = async () => {
+    let started = false;
+    try {
+      await beginTransaction();
+      started = true;
+      const results = await operations();
+      await commitTransaction();
+      started = false;
+      return results;
+    } catch (err) {
+      if (started) {
+        try {
+          await rollbackTransaction();
+        } catch (rollbackErr) {
+          err.rollbackError = rollbackErr;
+        }
+      }
+      throw err;
+    }
+  };
+
+  const result = transactionQueue.then(execute, execute);
+  transactionQueue = result.catch(() => {});
+  return result;
 };
 
 module.exports = { run, get, all, paginateQuery, beginTransaction, commitTransaction, rollbackTransaction, runInTransaction };
