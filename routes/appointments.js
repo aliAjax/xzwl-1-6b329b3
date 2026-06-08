@@ -225,14 +225,15 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
       [contact_id, plot_id, appointment_date, appointment_time, number_of_people || 1, vehicle_number, remark]
     );
 
+    let linkResult = null;
     if (capacityCheck.hasSlot) {
-      await linkAppointmentToSlot(result.id, appointment_date, appointment_time);
+      linkResult = await linkAppointmentToSlot(result.id, appointment_date, appointment_time);
     }
 
     const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.CREATE, req.body);
     await logOperation(req, RESOURCE_TYPES.APPOINTMENT, result.id, ACTIONS.CREATE, summary);
     
-    success(res, { 
+    const responseData = { 
       id: result.id,
       capacity_info: capacityCheck.hasSlot ? {
         has_slot: true,
@@ -240,7 +241,13 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
         booked: capacityCheck.booked + (number_of_people || 1),
         remaining: capacityCheck.remaining - (number_of_people || 1)
       } : { has_slot: false }
-    }, '预约创建成功');
+    };
+
+    if (linkResult && linkResult.autoAssignedTime) {
+      responseData.auto_assigned_time = linkResult.autoAssignedTime;
+    }
+
+    success(res, responseData, '预约创建成功');
   } catch (err) {
     error(res, err.message, 500);
   }
@@ -387,10 +394,12 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     const newNumberOfPeople = number_of_people !== undefined ? number_of_people : existing.number_of_people;
     const newStatus = status !== undefined ? status : existing.status;
 
+    const timeExplicitlyCleared = appointment_time !== undefined && !appointment_time;
     const dateOrTimeChanged = (appointment_date !== undefined && appointment_date !== existing.appointment_date) || 
                               (appointment_time !== undefined && appointment_time !== existing.appointment_time);
     const peopleChanged = number_of_people !== undefined && number_of_people !== existing.number_of_people;
     const statusChanged = status !== undefined && status !== existing.status;
+    let autoAssigned = false;
 
     if (dateOrTimeChanged || peopleChanged) {
       const oldSlot = await findMatchingTimeSlot(existing.appointment_date, existing.appointment_time);
@@ -416,7 +425,15 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       }
 
       if (newSlot && ['待确认', '已确认'].includes(newStatus)) {
-        await linkAppointmentToSlot(id, newDate, newTime);
+        const linkTime = timeExplicitlyCleared ? null : newTime;
+        const linkResult = await linkAppointmentToSlot(id, newDate, linkTime);
+        if (linkResult && linkResult.autoAssignedTime) {
+          autoAssigned = true;
+        }
+      }
+      
+      if (timeExplicitlyCleared && !autoAssigned) {
+        await run('UPDATE appointments SET appointment_time = NULL WHERE id = ?', [id]);
       }
     }
 
@@ -431,7 +448,15 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
         if (!capacityCheck.isAvailable) {
           return error(res, `该时段预约已满，剩余容量: ${capacityCheck.remaining}`, 400);
         }
-        await linkAppointmentToSlot(id, newDate, newTime);
+        const linkTime = timeExplicitlyCleared ? null : newTime;
+        const linkResult = await linkAppointmentToSlot(id, newDate, linkTime);
+        if (linkResult && linkResult.autoAssignedTime) {
+          autoAssigned = true;
+        }
+      }
+      
+      if (timeExplicitlyCleared && !autoAssigned) {
+        await run('UPDATE appointments SET appointment_time = NULL WHERE id = ?', [id]);
       }
     }
     
@@ -450,7 +475,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       updateFields.push('appointment_date = ?');
       updateParams.push(appointment_date);
     }
-    if (appointment_time !== undefined) {
+    if (appointment_time !== undefined && !timeExplicitlyCleared) {
       updateFields.push('appointment_time = ?');
       updateParams.push(appointment_time);
     }

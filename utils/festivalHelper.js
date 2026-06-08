@@ -1,24 +1,62 @@
-const { get, run } = require('./dbHelper');
+const { get, run, all } = require('./dbHelper');
 
 const findMatchingTimeSlot = async (date, time) => {
-  if (!time) {
-    return null;
+  if (time) {
+    const slot = await get(`
+      SELECT fts.*,
+             fs.status as festival_status
+      FROM festival_time_slots fts
+      INNER JOIN festival_schedules fs ON fts.festival_schedule_id = fs.id
+      WHERE fs.status = 'active'
+        AND fts.date = ?
+        AND fts.start_time <= ?
+        AND fts.end_time > ?
+      ORDER BY fts.start_time ASC
+      LIMIT 1
+    `, [date, time, time]);
+
+    return slot || null;
   }
 
-  const slot = await get(`
+  const slots = await all(`
     SELECT fts.*,
            fs.status as festival_status
     FROM festival_time_slots fts
     INNER JOIN festival_schedules fs ON fts.festival_schedule_id = fs.id
     WHERE fs.status = 'active'
       AND fts.date = ?
-      AND fts.start_time <= ?
-      AND fts.end_time > ?
     ORDER BY fts.start_time ASC
-    LIMIT 1
-  `, [date, time, time]);
+  `, [date]);
 
-  return slot || null;
+  if (!slots || slots.length === 0) {
+    return null;
+  }
+
+  let bestSlot = null;
+  let maxRemaining = -1;
+
+  for (const slot of slots) {
+    const occupancy = await getSlotOccupancy(slot.id, slot.date, slot.start_time, slot.end_time);
+    const remaining = slot.capacity - occupancy.total_people;
+    if (remaining > maxRemaining) {
+      maxRemaining = remaining;
+      bestSlot = slot;
+    }
+  }
+
+  return bestSlot;
+};
+
+const hasFestivalSlotsOnDate = async (date) => {
+  const count = await get(`
+    SELECT COUNT(*) as count
+    FROM festival_time_slots fts
+    INNER JOIN festival_schedules fs ON fts.festival_schedule_id = fs.id
+    WHERE fs.status = 'active'
+      AND fts.date = ?
+  `, [date]);
+
+  return count && count.count > 0;
 };
 
 const getSlotOccupancy = async (slotId, date, startTime, endTime) => {
@@ -80,7 +118,8 @@ const checkCapacity = async (date, time, numberOfPeople = 1) => {
     capacity: slot.capacity,
     booked: occupancy.total_people,
     remaining: remaining,
-    slot: slot
+    slot: slot,
+    autoAssignedTime: !time ? slot.start_time : null
   };
 };
 
@@ -105,10 +144,15 @@ const linkAppointmentToSlot = async (appointmentId, date, time) => {
     [appointmentId, slot.id]
   );
 
+  if (!time) {
+    await run('UPDATE appointments SET appointment_time = ? WHERE id = ?', [slot.start_time, appointmentId]);
+  }
+
   return {
     linkId: result.id,
     slotId: slot.id,
-    slot: slot
+    slot: slot,
+    autoAssignedTime: !time ? slot.start_time : null
   };
 };
 
@@ -126,5 +170,6 @@ module.exports = {
   getSlotOccupancy,
   checkCapacity,
   linkAppointmentToSlot,
-  unlinkAppointmentFromSlot
+  unlinkAppointmentFromSlot,
+  hasFestivalSlotsOnDate
 };
