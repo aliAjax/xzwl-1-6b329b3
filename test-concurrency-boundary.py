@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import requests
 import json
 import time
@@ -6,9 +7,12 @@ import threading
 import sys
 from datetime import datetime, timedelta
 from collections import Counter
-
-BASE_URL = 'http://localhost:3000'
+# 测试环境配置
+PORT = int(os.environ.get('TEST_PORT', '3001'))
+BASE_URL = os.environ.get('TEST_BASE_URL', f'http://localhost:{PORT}')
 API_URL = f'{BASE_URL}/api'
+TEST_USERNAME = os.environ.get('TEST_USERNAME', 'admin')
+TEST_PASSWORD = os.environ.get('TEST_PASSWORD', 'admin123')
 TIMESTAMP = str(int(time.time()))
 TEST_DATE = (datetime.now() + timedelta(days=90 + int(TIMESTAMP[-5:]) % 365)).strftime('%Y-%m-%d')
 MAX_RETRIES = 3

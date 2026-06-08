@@ -2,7 +2,7 @@ const moment = require('moment');
 const { run, get, all, runInTransaction } = require('../utils/dbHelper');
 const { getSlotOccupancy, checkCapacity, linkAppointmentToSlotById, unlinkAppointmentFromSlot, findMatchingTimeSlot } = require('../utils/festivalHelper');
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';
 const API_URL = `${BASE_URL}/api`;
 let authToken = null;
 

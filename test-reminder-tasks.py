@@ -5,8 +5,11 @@ import sys
 import sqlite3
 import os
 from datetime import datetime, timedelta
-
-BASE_URL = 'http://localhost:3000/api'
+# 测试环境配置
+PORT = int(os.environ.get('TEST_PORT', '3001'))
+BASE_URL = os.environ.get('TEST_BASE_URL', f'http://localhost:{PORT}') + '/api'
+TEST_USERNAME = os.environ.get('TEST_USERNAME', 'admin')
+TEST_PASSWORD = os.environ.get('TEST_PASSWORD', 'admin123')
 DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'cemetery.db')
 
 def login():

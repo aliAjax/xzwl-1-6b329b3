@@ -1,7 +1,12 @@
+import os
 import requests
 import time
-
-BASE_URL = 'http://localhost:8080'
+# 测试环境配置
+PORT = int(os.environ.get('TEST_PORT', '3001'))
+BASE_URL = os.environ.get('TEST_BASE_URL', f'http://localhost:{PORT}')
+API_URL = f'{BASE_URL}/api'
+TEST_USERNAME = os.environ.get('TEST_USERNAME', 'admin')
+TEST_PASSWORD = os.environ.get('TEST_PASSWORD', 'admin123')
 
 resp = requests.post(f'{BASE_URL}/api/auth/login', json={'username': 'admin', 'password': 'admin123'})
 token = resp.json()['data']['token']

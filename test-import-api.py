@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
+import os
 import requests
 import json
-
-BASE_URL = 'http://localhost:3000'
+# 测试环境配置
+PORT = int(os.environ.get('TEST_PORT', '3001'))
+BASE_URL = os.environ.get('TEST_BASE_URL', f'http://localhost:{PORT}')
+API_URL = f'{BASE_URL}/api'
+TEST_USERNAME = os.environ.get('TEST_USERNAME', 'admin')
+TEST_PASSWORD = os.environ.get('TEST_PASSWORD', 'admin123')
 
 def login():
     response = requests.post(f'{BASE_URL}/api/auth/login', 

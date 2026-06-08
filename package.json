@@ -8,7 +8,10 @@
     "dev": "nodemon app.js",
     "init": "node scripts/init-db.js",
     "seed": "node scripts/seed-data.js",
-    "migrate": "node scripts/migrate-db.js"
+    "migrate": "node scripts/migrate-db.js",
+    "test": "node scripts/run-tests.js",
+    "test:node": "node scripts/run-tests.js --node-only",
+    "test:python": "node scripts/run-tests.js --python-only"
   },
   "dependencies": {
     "express": "^4.18.2",
