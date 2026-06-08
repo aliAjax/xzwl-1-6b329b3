@@ -236,7 +236,7 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
     const params = [];
 
     const now = moment();
-    
+
     if (expiring_within_days) {
       const cutoffDate = now.clone().add(parseInt(expiring_within_days), 'days').format('YYYY-MM-DD HH:mm:ss');
       baseSql += " AND c.status = 'reserved' AND c.reserved_expires_at <= ?";
