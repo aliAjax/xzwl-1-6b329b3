@@ -108,7 +108,7 @@ const executeReleaseOperations = async (reservation, contract, plot, operatorId,
   };
 };
 
-const releaseSingleExpiredReservation = async (reservation, operatorId, operatorName, ipAddress = '') => {
+const releaseSingleExpiredReservation = async (reservation, operatorId, operatorName, ipAddress = '', useTransaction = true) => {
   const validation = await validateReservationForRelease(reservation);
 
   if (!validation.valid) {
@@ -126,9 +126,13 @@ const releaseSingleExpiredReservation = async (reservation, operatorId, operator
   const { contract, plot } = validation;
 
   try {
-    const result = await runInTransaction(async () => {
+    const releaseOperations = async () => {
       return await executeReleaseOperations(reservation, contract, plot, operatorId, operatorName, ipAddress);
-    });
+    };
+
+    const result = useTransaction
+      ? await runInTransaction(releaseOperations)
+      : await releaseOperations();
 
     return result;
   } catch (err) {
@@ -204,7 +208,7 @@ const checkAndReleaseExpiredReservationsForPlot = async (plotId, operatorId = nu
       contract_no: r.contract_no,
       plot_number: r.plot_number
     };
-    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress);
+    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress, releaseInTransaction);
   }
 };
 

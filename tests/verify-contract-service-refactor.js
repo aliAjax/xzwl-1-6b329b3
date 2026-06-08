@@ -51,7 +51,8 @@ const {
 } = require('../services/plotStatusSyncService');
 
 const {
-  validateReservationForRelease
+  validateReservationForRelease,
+  checkAndReleaseExpiredReservationsForPlot
 } = require('../services/reservationReleaseService');
 
 let passed = 0;
@@ -586,6 +587,35 @@ const tests = [
       }
     }
     console.log('   ℹ️  事务回滚正确工作');
+  }),
+
+  test('事务边界 - 外层事务内释放过期预留', async () => {
+    const plotId = await createTestPlot(`REFACTOR-${timestamp}-022`, PLOT_STATUSES.RESERVED);
+    const expiresAt = moment().subtract(1, 'day').format('YYYY-MM-DD HH:mm:ss');
+    const contractId = await createTestContract(plotId, CONTRACT_STATUSES.RESERVED, expiresAt);
+    await createTestReservation(plotId, contractId, '过期用户', '13900000000', expiresAt);
+
+    await runInTransaction(async () => {
+      await checkAndReleaseExpiredReservationsForPlot(plotId, 1, '测试管理员', '', false);
+    });
+
+    const contract = await get('SELECT status, reserved_at, reserved_expires_at FROM contracts WHERE id = ?', [contractId]);
+    const reservation = await get('SELECT status FROM plot_reservations WHERE contract_id = ?', [contractId]);
+    const plot = await get('SELECT status FROM plots WHERE id = ?', [plotId]);
+
+    if (contract.status !== CONTRACT_STATUSES.DRAFT) {
+      throw new Error('外层事务释放后合同应该回到草稿状态');
+    }
+    if (contract.reserved_at !== null || contract.reserved_expires_at !== null) {
+      throw new Error('外层事务释放后合同预留时间应该清空');
+    }
+    if (reservation.status !== 'expired') {
+      throw new Error('外层事务释放后预留记录应该标记为 expired');
+    }
+    if (plot.status !== PLOT_STATUSES.AVAILABLE) {
+      throw new Error('外层事务释放后墓位应该恢复空闲');
+    }
+    console.log('   ℹ️  外层事务内释放过期预留正确复用事务边界');
   }),
 
   test('清理测试数据', async () => {
