@@ -477,13 +477,13 @@ router.put('/:id', authenticate, idParamValidation, appointmentUpdateValidation,
 
         if (['待确认', '已确认'].includes(newStatus)) {
           const currentOccupancy = await getSlotOccupancy(explicitSlot.id, explicitSlot.date, explicitSlot.start_time, explicitSlot.end_time);
-          
+
           let bookedCount = currentOccupancy.total_people;
           const currentSlot = await getCurrentSlotForAppointment(id);
           if (currentSlot && currentSlot.id === explicitSlot.id) {
             bookedCount -= existing.number_of_people;
           }
-          
+
           const remaining = explicitSlot.capacity - bookedCount;
           if (newNumberOfPeople > remaining) {
             return error(res, `该时段容量不足，剩余容量: ${remaining}，需要: ${newNumberOfPeople}`, 400);

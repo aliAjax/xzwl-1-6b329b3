@@ -182,13 +182,13 @@ const unlinkAppointmentFromSlot = async (appointmentId) => {
 
 const linkAppointmentToSlotById = async (appointmentId, slotId) => {
   const slot = await getTimeSlotById(slotId);
-  
+
   if (!slot) {
     return null;
   }
 
   const existingLink = await get(`
-    SELECT id FROM festival_appointment_slots 
+    SELECT id FROM festival_appointment_slots
     WHERE appointment_id = ?
   `, [appointmentId]);
 
