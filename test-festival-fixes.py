@@ -1,6 +1,7 @@
 import os
 import requests
 import json
+import time
 # 测试环境配置
 PORT = int(os.environ.get('TEST_PORT', '3001'))
 BASE_URL = os.environ.get('TEST_BASE_URL', f'http://localhost:{PORT}') + '/api'
@@ -19,8 +20,31 @@ headers = {"Authorization": f"Bearer {token}"}
 
 print("=== 测试修复后的API ===\n")
 
+suffix = int(time.time())
+schedule = requests.post(f"{BASE_URL}/festival-schedules", json={
+    "festival_name": f"测试节日{suffix}",
+    "festival_type": "清明节",
+    "start_date": "2026-04-04",
+    "end_date": "2026-04-04",
+    "description": "测试排班",
+    "time_slots": [{
+        "date": "2026-04-04",
+        "start_time": "08:00",
+        "end_time": "10:00",
+        "capacity": 100,
+        "remark": "测试时段",
+        "staff": [{"user_id": 1, "duty": "现场协调"}]
+    }]
+}, headers=headers).json()
+print(f"创建排班: code={schedule['code']}, message={schedule['message']}")
+assert schedule["code"] == 200, schedule
+schedule_id = schedule["data"]["id"]
+schedule_detail = requests.get(f"{BASE_URL}/festival-schedules/{schedule_id}", headers=headers).json()
+slot_id = schedule_detail["data"]["dates"][0]["slots"][0]["id"]
+staff_id = schedule_detail["data"]["dates"][0]["slots"][0]["staff"][0]["id"]
+
 print("1. 查询时段详情")
-response = requests.get(f"{BASE_URL}/festival-schedules/slots/1/detail", headers=headers)
+response = requests.get(f"{BASE_URL}/festival-schedules/slots/{slot_id}/detail", headers=headers)
 result = response.json()
 print(f"时段1详情: code={result['code']}, message={result['message']}")
 if result['code'] == 200:
@@ -33,7 +57,7 @@ if result['code'] == 200:
 print()
 
 print("2. 调整时段容量")
-response = requests.put(f"{BASE_URL}/festival-schedules/slots/1", json={"capacity": 150, "remark": "容量调整为150"}, headers=headers)
+response = requests.put(f"{BASE_URL}/festival-schedules/slots/{slot_id}", json={"capacity": 150, "remark": "容量调整为150"}, headers=headers)
 result = response.json()
 print(f"调整结果: code={result['code']}, message={result['message']}")
 
@@ -49,7 +73,7 @@ if result['code'] == 200:
 print()
 
 print("4. 删除排班记录")
-response = requests.delete(f"{BASE_URL}/festival-schedules/staff/4", headers=headers)
+response = requests.delete(f"{BASE_URL}/festival-schedules/staff/{staff_id}", headers=headers)
 result = response.json()
 print(f"删除结果: code={result['code']}, message={result['message']}")
 

@@ -10,7 +10,7 @@ PORT = int(os.environ.get('TEST_PORT', '3001'))
 BASE_URL = os.environ.get('TEST_BASE_URL', f'http://localhost:{PORT}') + '/api'
 TEST_USERNAME = os.environ.get('TEST_USERNAME', 'admin')
 TEST_PASSWORD = os.environ.get('TEST_PASSWORD', 'admin123')
-DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'cemetery.db')
+DB_PATH = os.environ.get('TEST_DB_PATH', os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'data', 'cemetery.db')))
 
 def login():
     response = requests.post(f'{BASE_URL}/auth/login', json={

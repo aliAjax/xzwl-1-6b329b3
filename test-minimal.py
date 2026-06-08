@@ -11,30 +11,41 @@ TEST_PASSWORD = os.environ.get('TEST_PASSWORD', 'admin123')
 resp = requests.post(f'{BASE_URL}/api/auth/login', json={'username': 'admin', 'password': 'admin123'})
 token = resp.json()['data']['token']
 h = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+ts = int(time.time() * 1000)
+
+def create_plot(index):
+    resp = requests.post(f'{BASE_URL}/api/plots', headers=h, json={
+        'plot_number': f'TEST-{ts}-{index}',
+        'area': '测试区',
+        'row': 100,
+        'col': index,
+        'status': '空闲',
+        'type': '单穴',
+        'price': 50000
+    }).json()
+    assert resp['code'] == 200, f'创建测试墓位失败: {resp}'
+    return resp['data']['id']
+
+def create_contact(index):
+    resp = requests.post(f'{BASE_URL}/api/contacts', headers=h, json={
+        'name': f'测试联系人{ts}-{index}',
+        'phone': f'138{str(ts)[-8:]}{index}'[-11:],
+        'relationship': '家属'
+    }).json()
+    assert resp['code'] == 200, f'创建测试联系人失败: {resp}'
+    return resp['data']['id']
 
 print('=== Bug修复验证测试 ===')
 print()
 
-resp = requests.get(f'{BASE_URL}/api/plots', headers=h, params={'status': '空闲', 'pageSize': 10})
-plots = resp.json()['data']['list']
-print(f'可用墓位数: {len(plots)}')
-
-if len(plots) < 3:
-    print('需要至少3个可用墓位，正在创建...')
-    for i in range(3):
-        ts = int(time.time() * 1000)
-        requests.post(f'{BASE_URL}/api/plots', headers=h, json={
-            'plot_number': f'TEST-{ts}-{i}',
-            'area': '测试区', 'row': 100 + i, 'col': ts + i,
-            'status': '空闲', 'type': '单穴', 'price': 50000
-        })
-    resp = requests.get(f'{BASE_URL}/api/plots', headers=h, params={'status': '空闲', 'pageSize': 10})
-    plots = resp.json()['data']['list']
-
-pid1 = plots[0]['id']
-pid2 = plots[1]['id']
-pid3 = plots[2]['id']
-print(f'使用墓位: {pid1}, {pid2}, {pid3}')
+pid1 = create_plot(1)
+pid2 = create_plot(2)
+pid3 = create_plot(3)
+pid4 = create_plot(4)
+contact1 = create_contact(1)
+contact2 = create_contact(2)
+contact3 = create_contact(3)
+print(f'使用墓位: {pid1}, {pid2}, {pid3}, {pid4}')
 
 print()
 print('=== 测试1: 重复占用检查 ===')
@@ -43,13 +54,13 @@ d1 = requests.post(f'{BASE_URL}/api/deceased', headers=h, json={
 }).json()['data']['id']
 
 c1 = requests.post(f'{BASE_URL}/api/contracts', headers=h, json={
-    'plot_id': pid1, 'deceased_id': d1,
+    'plot_id': pid1, 'contact_id': contact1, 'deceased_id': d1,
     'plot_price': 50000, 'management_fee': 2000, 'management_fee_years': 10
 }).json()['data']['id']
 print(f'✓ 创建合同 {c1}')
 
 resp = requests.post(f'{BASE_URL}/api/contracts/{c1}/sign', headers=h, json={
-    'deceased_id': d1, 'plot_price': 50000, 'management_fee': 2000, 'management_fee_years': 10
+    'contact_id': contact1, 'deceased_id': d1, 'plot_price': 50000, 'management_fee': 2000, 'management_fee_years': 10
 })
 assert resp.json()['code'] == 200, '签约失败'
 print('✓ 签约成功')
@@ -89,7 +100,7 @@ p2 = requests.post(f'{BASE_URL}/api/payments', headers=h, json={
 print(f'✓ 创建历史付款 {p1}, {p2}')
 
 resp = requests.post(f'{BASE_URL}/api/contracts', headers=h, json={
-    'plot_id': pid2, 'plot_price': 50000, 'management_fee': 2000, 'management_fee_years': 10
+    'plot_id': pid2, 'contact_id': contact2, 'plot_price': 50000, 'management_fee': 2000, 'management_fee_years': 10
 }).json()
 c2 = resp['data']['id']
 linked = resp['data'].get('linked_payments', {})
@@ -108,12 +119,12 @@ d3 = requests.post(f'{BASE_URL}/api/deceased', headers=h, json={
 }).json()['data']['id']
 
 c3 = requests.post(f'{BASE_URL}/api/contracts', headers=h, json={
-    'plot_id': pid3, 'deceased_id': d3,
+    'plot_id': pid3, 'contact_id': contact3, 'deceased_id': d3,
     'plot_price': 60000, 'management_fee': 3000, 'management_fee_years': 15
 }).json()['data']['id']
 
 requests.post(f'{BASE_URL}/api/contracts/{c3}/sign', headers=h, json={
-    'deceased_id': d3, 'plot_price': 60000, 'management_fee': 3000, 'management_fee_years': 15
+    'contact_id': contact3, 'deceased_id': d3, 'plot_price': 60000, 'management_fee': 3000, 'management_fee_years': 15
 })
 print(f'✓ 创建并签约合同 {c3}')
 
@@ -141,18 +152,17 @@ print(f'✓ 款项付清，合同自动生效: {detail["status"]}')
 
 print()
 print('=== 测试4: 预留阻止 ===')
-resp = requests.post(f'{BASE_URL}/api/contracts', headers=h, json={
-    'plot_id': pid1, 'plot_price': 50000
-})
-c4 = resp.json()['data']['id']
-resp = requests.post(f'{BASE_URL}/api/contracts/{c4}/reserve', headers=h, json={
-    'contact_name': '测试客户', 'contact_phone': '13800000000', 'reserve_days': 7
-})
+resp = requests.post(f'{BASE_URL}/api/contracts/reserve', headers=h, json={
+    'plot_id': pid4, 'contact_name': '测试客户', 'contact_phone': '13800000000',
+    'reserve_days': 7, 'plot_price': 50000
+}).json()
+assert resp['code'] == 200, f'预留失败: {resp}'
+c4 = resp['data']['id']
 print(f'✓ 预留合同 {c4}')
 
 result = requests.post(f'{BASE_URL}/api/deceased', headers=h, json={
     'name': '逝者D', 'gender': '男', 'birth_date': '1950-01-01', 'death_date': '2024-01-01',
-    'plot_id': pid1
+    'plot_id': pid4
 }).json()
 assert result['code'] == 400, f'应该阻止但返回 {result}'
 print(f'✓ 预留期间阻止创建逝者: {result["message"]}')

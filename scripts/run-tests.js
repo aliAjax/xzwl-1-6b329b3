@@ -102,7 +102,7 @@ const getProcessIdOnPort = (port) => {
   try {
     if (process.platform === 'darwin' || process.platform === 'linux') {
       const { spawnSync } = require('child_process');
-      const result = spawnSync('lsof', [`-ti:${port}`], {
+      const result = spawnSync('lsof', [`-tiTCP:${port}`, '-sTCP:LISTEN'], {
         encoding: 'utf8',
         timeout: 2000,
         stdio: ['ignore', 'pipe', 'ignore']
@@ -569,7 +569,16 @@ const stopServer = async (serverProcess) => {
   });
 };
 
-const runNodeTests = async () => {
+const filterTestFiles = (testFiles, selectedFiles) => {
+  if (!selectedFiles || selectedFiles.length === 0) {
+    return testFiles;
+  }
+
+  const selected = new Set(selectedFiles.map(file => file.replace(/\\/g, '/')));
+  return testFiles.filter(file => selected.has(file) || selected.has(path.basename(file)));
+};
+
+const runNodeTests = async (prepareTest, selectedFiles = []) => {
   logSection('执行 Node.js 单元测试');
 
   const testFiles = [
@@ -577,11 +586,12 @@ const runNodeTests = async () => {
     'tests/verify-concurrency-boundary.js'
   ];
 
+  const selectedTestFiles = filterTestFiles(testFiles, selectedFiles);
   const results = [];
   let step = 0;
-  const total = testFiles.length;
+  const total = selectedTestFiles.length;
 
-  for (const testFile of testFiles) {
+  for (const testFile of selectedTestFiles) {
     step++;
     const filePath = path.join(PROJECT_ROOT, testFile);
     if (!fs.existsSync(filePath)) {
@@ -590,8 +600,9 @@ const runNodeTests = async () => {
       continue;
     }
 
-    logStep(step, total, `运行测试: ${testFile}`);
     try {
+      await prepareTest(testFile);
+      logStep(step, total, `运行测试: ${testFile}`);
       await withTimeout(
         runCommand('node', [testFile], {
           operationName: testFile,
@@ -611,7 +622,7 @@ const runNodeTests = async () => {
   return results;
 };
 
-const runPythonTests = async () => {
+const runPythonTests = async (prepareTest, selectedFiles = []) => {
   logSection('执行 Python API 测试');
 
   const testFiles = [
@@ -638,11 +649,12 @@ const runPythonTests = async () => {
     'test-concurrency-boundary.py'
   ];
 
+  const selectedTestFiles = filterTestFiles(testFiles, selectedFiles);
   const results = [];
   let step = 0;
-  const total = testFiles.length;
+  const total = selectedTestFiles.length;
 
-  for (const testFile of testFiles) {
+  for (const testFile of selectedTestFiles) {
     step++;
     const filePath = path.join(PROJECT_ROOT, testFile);
     if (!fs.existsSync(filePath)) {
@@ -651,8 +663,9 @@ const runPythonTests = async () => {
       continue;
     }
 
-    logStep(step, total, `运行测试: ${testFile}`);
     try {
+      await prepareTest(testFile);
+      logStep(step, total, `运行测试: ${testFile}`);
       await withTimeout(
         runCommand('python3', [testFile], {
           operationName: testFile,
@@ -712,11 +725,25 @@ const printSummary = (nodeResults, pythonResults) => {
 
 const parseArgs = () => {
   const args = process.argv.slice(2);
+  const selectedFiles = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--file' || args[i] === '--test-file') {
+      if (args[i + 1]) {
+        selectedFiles.push(args[i + 1]);
+        i++;
+      }
+    } else if (!args[i].startsWith('--')) {
+      selectedFiles.push(args[i]);
+    }
+  }
+
   return {
     nodeOnly: args.includes('--node-only'),
     pythonOnly: args.includes('--python-only'),
     noCleanup: args.includes('--no-cleanup'),
-    verbose: args.includes('--verbose')
+    verbose: args.includes('--verbose'),
+    selectedFiles
   };
 };
 
@@ -772,24 +799,35 @@ const main = async () => {
     if (options.nodeOnly) log('运行模式: 仅 Node.js 测试');
     if (options.pythonOnly) log('运行模式: 仅 Python 测试');
     if (options.noCleanup) log('⚠️  清理模式: 保留测试数据库');
+    if (options.selectedFiles.length > 0) log(`测试文件过滤: ${options.selectedFiles.join(', ')}`);
 
     await checkDependencies();
     ensureDataDir();
     await cleanupOrphanProcesses();
     await cleanupTestDb();
 
-    logSection('数据库初始化');
-    await initTestDb();
-    await runMigrations();
-    await seedTestData();
-    await verifyDbInitialized();
+    const prepareTest = async (testFile) => {
+      logSection(`准备测试环境: ${testFile}`);
 
-    logSection('启动测试服务');
-    serverProcess = await startTestServer();
+      if (serverProcess && !serverProcess.killed) {
+        await stopServer(serverProcess);
+        serverProcess = null;
+      }
+
+      await cleanupOrphanProcesses();
+      await cleanupTestDb();
+
+      await initTestDb();
+      await runMigrations();
+      await seedTestData();
+      await verifyDbInitialized();
+
+      serverProcess = await startTestServer();
+    };
 
     logSection('执行测试');
-    const nodeResults = runNode ? await runNodeTests() : [];
-    const pythonResults = runPython ? await runPythonTests() : [];
+    const nodeResults = runNode ? await runNodeTests(prepareTest, options.selectedFiles) : [];
+    const pythonResults = runPython ? await runPythonTests(prepareTest, options.selectedFiles) : [];
 
     allPassed = printSummary(nodeResults, pythonResults);
 

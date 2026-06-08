@@ -55,6 +55,14 @@ def test_historical_data_migration(token):
 
 def test_manual_payment_duplicate_check(token):
     print('\n=== 测试2: 验证手工录入同年度账单去重 ===')
+
+    seed_response = requests.post(f'{BASE_URL}/bills/generate', headers=headers(token), json={
+        'bill_year': 2026,
+        'fee_standard': 200,
+        'plot_ids': [1]
+    })
+    print(f'预置系统账单状态码: {seed_response.status_code}')
+    assert seed_response.status_code == 200, '预置系统账单应该成功'
     
     response = requests.post(f'{BASE_URL}/payments', headers=headers(token), json={
         'plot_id': 1,

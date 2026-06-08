@@ -10,7 +10,7 @@ PORT = int(os.environ.get('TEST_PORT', '3001'))
 BASE_URL = os.environ.get('TEST_BASE_URL', f'http://localhost:{PORT}') + '/api'
 TEST_USERNAME = os.environ.get('TEST_USERNAME', 'admin')
 TEST_PASSWORD = os.environ.get('TEST_PASSWORD', 'admin123')
-DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'cemetery.db')
+DB_PATH = os.environ.get('TEST_DB_PATH', os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'data', 'cemetery.db')))
 
 def login(username, password):
     response = requests.post(f'{BASE_URL}/auth/login', json={
@@ -43,6 +43,18 @@ def setup_test_data():
     visit_date = (today - timedelta(days=7)).strftime('%Y-%m-%d')
 
     try:
+        cursor.execute("SELECT password FROM users WHERE username = 'staff'")
+        staff_password = cursor.fetchone()[0]
+        cursor.execute("""
+            INSERT OR IGNORE INTO users (username, password, name, role, phone, status)
+            VALUES ('staff1', ?, '测试员工1', 'staff', '13800001001', 'active')
+        """, (staff_password,))
+        cursor.execute("""
+            INSERT OR IGNORE INTO users (username, password, name, role, phone, status)
+            VALUES ('staff2', ?, '测试员工2', 'staff', '13800001002', 'active')
+        """, (staff_password,))
+        conn.commit()
+
         cursor.execute("SELECT id FROM users WHERE username = 'staff1' AND status = 'active'")
         staff1 = cursor.fetchone()
         cursor.execute("SELECT id FROM users WHERE username = 'staff2' AND status = 'active'")

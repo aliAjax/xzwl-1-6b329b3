@@ -22,12 +22,19 @@ def login(username, password):
 def headers(token):
     return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
 
+def plot_position(plot_number):
+    value = 0
+    for char in plot_number:
+        value = (value * 131 + ord(char)) % 900000
+    return 1000 + value, 1000 + value
+
 def create_test_plot(token, plot_number):
+    row, col = plot_position(plot_number)
     response = requests.post(f'{BASE_URL}/api/plots', headers=headers(token), json={
         'plot_number': plot_number,
         'area': 'BUGFIX区',
-        'row': 99,
-        'col': int(plot_number.split('-')[-1]),
+        'row': row,
+        'col': col,
         'status': '空闲',
         'type': '单穴',
         'price': 50000
@@ -40,7 +47,8 @@ def create_test_plot(token, plot_number):
         items = list_data.get('data', {}).get('list', [])
         if items:
             return items[0]['id']
-    return data['data']['id'] if data.get('code') == 200 else None
+    assert data.get('code') == 200, f'创建墓位失败: {data}'
+    return data['data']['id']
 
 def create_test_contact(token, name, phone):
     response = requests.post(f'{BASE_URL}/api/contacts', headers=headers(token), json={

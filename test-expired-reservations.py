@@ -82,6 +82,16 @@ def get_expired_reservations(token):
     print(f'Get expired reservations: total =', data.get('data', {}).get('pagination', {}).get('total'))
     return data.get('data')
 
+def wait_for_expired_reservation(token, contract_id, timeout=5):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        expired = get_expired_reservations(token)
+        for item in expired.get('list', []):
+            if item.get('contract_id') == contract_id:
+                return expired
+        time.sleep(0.5)
+    raise AssertionError(f'Contract {contract_id} did not become expired within {timeout}s')
+
 def scan_expired_reservations(token):
     response = requests.post(f'{BASE_URL}/api/contracts/scan-expired-reservations', headers=headers(token), json={})
     data = response.json()
@@ -109,8 +119,9 @@ def get_plot_statistics(token):
 
 def get_operation_logs(token):
     response = requests.get(f'{BASE_URL}/api/operation-logs', headers=headers(token), 
-        params={'pageSize': 20, 'resource_type': 'contract'})
+        params={'pageSize': 20})
     data = response.json()
+    assert data.get('code') == 200, f'Operation log query failed: {data}'
     logs = data.get('data', {}).get('list', [])
     print(f'Recent operation logs ({len(logs)}):')
     for log in logs[:5]:
@@ -149,6 +160,8 @@ def test_expired_reservation_workflow():
         reserve_1 = reserve_plot_with_custom_expiry(token, plot_id_1, '用户A', '13800000001', 0)
         reserve_2 = reserve_plot_with_custom_expiry(token, plot_id_2, '用户B', '13800000002', 7)
         reserve_3 = reserve_plot_with_custom_expiry(token, plot_id_3, '用户C', '13800000003', 30)
+        print('等待0天预留进入过期列表...')
+        wait_for_expired_reservation(token, reserve_1['id'])
         
         print('\n' + '-' * 80)
         print('3. 验证预留状态')
