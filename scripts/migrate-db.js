@@ -549,6 +549,89 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
     const existingPaymentsWithoutCategory = await get('SELECT COUNT(*) as count FROM payments WHERE fee_category IS NULL OR fee_category = ?', ['管理费']);
     log(`当前缴费记录中，管理费类型: ${existingPaymentsWithoutCategory.count} 条`);
 
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS audit_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        snapshot_data TEXT NOT NULL,
+        operation_log_id INTEGER,
+        created_by INTEGER NOT NULL,
+        created_by_name TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('audit_snapshots 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS audit_field_diffs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id INTEGER NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        field_name TEXT NOT NULL,
+        old_value TEXT,
+        new_value TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (snapshot_id) REFERENCES audit_snapshots(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('audit_field_diffs 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS rollback_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id INTEGER NOT NULL,
+        field_diff_ids TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_by INTEGER NOT NULL,
+        requested_by_name TEXT NOT NULL,
+        reviewed_by INTEGER,
+        reviewed_by_name TEXT,
+        reviewed_at DATETIME,
+        review_remark TEXT,
+        rollback_executed_at DATETIME,
+        rollback_result TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (snapshot_id) REFERENCES audit_snapshots(id),
+        FOREIGN KEY (requested_by) REFERENCES users(id),
+        FOREIGN KEY (reviewed_by) REFERENCES users(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('rollback_requests 表已就绪');
+
+    await new Promise((resolve, reject) => {
+      db.run(`CREATE TABLE IF NOT EXISTS rollback_approvals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rollback_request_id INTEGER NOT NULL,
+        approval_action TEXT NOT NULL,
+        approval_remark TEXT,
+        approved_by INTEGER NOT NULL,
+        approved_by_name TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (rollback_request_id) REFERENCES rollback_requests(id),
+        FOREIGN KEY (approved_by) REFERENCES users(id)
+      )`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    log('rollback_approvals 表已就绪');
+
     log('');
     log('数据库迁移完成！');
     if (exitOnComplete) {

@@ -17,36 +17,25 @@ def login(username, password):
 def headers(token):
     return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
 
-def get_or_create_test_plot(token, plot_number):
-    import time
-    for i in range(10):
-        unique = f"{plot_number}-{int(time.time() * 1000)}-{i}"
-        r = requests.post(f"{BASE_URL}/api/plots", headers=headers(token), json={
-            "plot_number": unique, "area": "BUGFIX区", "row": 99,
-            "col": int(time.time() * 1000) % 100000,
-            "status": "空闲", "type": "单穴", "price": 50000
-        })
-        d = r.json()
-        if d.get("code") == 200:
-            return d["data"]["id"]
-    return None
-
-def _unused_old_func(token, plot_number):
-    for i in range(10):
-        unique_number = f'{plot_number}-{int(time.time() * 1000)}-{i}'
-        response = requests.post(f'{BASE_URL}/api/plots', headers=headers(token), json={
-            'plot_number': unique_number,
-            'area': 'BUGFIX区',
-            'row': 99,
-            'col': int(time.time() * 1000) % 100000,
-            'status': '空闲',
-            'type': '单穴',
-            'price': 50000
-        })
-        data = response.json()
-        if data.get('code') == 200:
-            return data['data']['id']
-    return None
+def create_test_plot(token, plot_number):
+    response = requests.post(f'{BASE_URL}/api/plots', headers=headers(token), json={
+        'plot_number': plot_number,
+        'area': 'BUGFIX区',
+        'row': 99,
+        'col': int(plot_number.split('-')[-1]),
+        'status': '空闲',
+        'type': '单穴',
+        'price': 50000
+    })
+    data = response.json()
+    if data.get('code') != 200:
+        response = requests.get(f'{BASE_URL}/api/plots', headers=headers(token), 
+            params={'keyword': plot_number, 'pageSize': 1})
+        list_data = response.json()
+        items = list_data.get('data', {}).get('list', [])
+        if items:
+            return items[0]['id']
+    return data['data']['id'] if data.get('code') == 200 else None
 
 def create_test_contact(token, name, phone):
     response = requests.post(f'{BASE_URL}/api/contacts', headers=headers(token), json={
@@ -88,7 +77,7 @@ def test_duplicate_occupation_check(token):
     print('测试1: 重复占用检查')
     print('=' * 60)
     
-    plot_id_1 = get_or_create_test_plot(token, f'OCC-{TIMESTAMP}-001')
+    plot_id_1 = create_test_plot(token, f'OCC-{TIMESTAMP}-001')
     contact_id = create_test_contact(token, f'张三{TIMESTAMP}', f'138{TIMESTAMP[-8:]}')
     deceased_id_1 = create_test_deceased(token, f'逝者A{TIMESTAMP}')
     
@@ -154,7 +143,7 @@ def test_duplicate_occupation_check(token):
     print(f'\n1.6 尝试为已占用墓位签约新合同（应该失败）')
     deceased_id_2 = create_test_deceased(token, f'逝者C{TIMESTAMP}')
     response = requests.post(f'{BASE_URL}/api/contracts', headers=headers(token), json={
-        'plot_id': get_or_create_test_plot(token, f'OCC-{TIMESTAMP}-002'),
+        'plot_id': create_test_plot(token, f'OCC-{TIMESTAMP}-002'),
         'contact_id': contact_id,
         'deceased_id': deceased_id_2['data']['id'],
         'plot_price': 50000
@@ -182,7 +171,7 @@ def test_historical_payment_link(token):
     print('测试2: 历史付款关联')
     print('=' * 60)
     
-    plot_id = get_or_create_test_plot(token, f'PAY-{TIMESTAMP}-001')
+    plot_id = create_test_plot(token, f'PAY-{TIMESTAMP}-001')
     contact_id = create_test_contact(token, f'李四{TIMESTAMP}', f'139{TIMESTAMP[-8:]}')
     
     print(f'\n2.1 为墓位创建历史付款记录（无合同关联）')
@@ -258,7 +247,7 @@ def test_payment_auto_link_to_contract(token):
     print('测试3: 独立创建付款自动关联合同')
     print('=' * 60)
     
-    plot_id = get_or_create_test_plot(token, f'AUTOLINK-{TIMESTAMP}-001')
+    plot_id = create_test_plot(token, f'AUTOLINK-{TIMESTAMP}-001')
     contact_id = create_test_contact(token, f'王五{TIMESTAMP}', f'137{TIMESTAMP[-8:]}')
     deceased_id = create_test_deceased(token, f'逝者E{TIMESTAMP}')
     
@@ -334,7 +323,7 @@ def test_reservation_blocking(token):
     print('测试4: 预留期间阻止占用')
     print('=' * 60)
     
-    plot_id = get_or_create_test_plot(token, f'RES-{TIMESTAMP}-001')
+    plot_id = create_test_plot(token, f'RES-{TIMESTAMP}-001')
     
     print(f'\n4.1 预留墓位')
     response = requests.post(f'{BASE_URL}/api/contracts/reserve', headers=headers(token), json={

@@ -378,6 +378,65 @@ const createTables = () => {
         FOREIGN KEY (appointment_id) REFERENCES appointments(id),
         FOREIGN KEY (time_slot_id) REFERENCES festival_time_slots(id),
         UNIQUE(appointment_id, time_slot_id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS audit_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        snapshot_data TEXT NOT NULL,
+        operation_log_id INTEGER,
+        created_by INTEGER NOT NULL,
+        created_by_name TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS audit_field_diffs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id INTEGER NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        field_name TEXT NOT NULL,
+        old_value TEXT,
+        new_value TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (snapshot_id) REFERENCES audit_snapshots(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS rollback_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id INTEGER NOT NULL,
+        field_diff_ids TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_by INTEGER NOT NULL,
+        requested_by_name TEXT NOT NULL,
+        reviewed_by INTEGER,
+        reviewed_by_name TEXT,
+        reviewed_at DATETIME,
+        review_remark TEXT,
+        rollback_executed_at DATETIME,
+        rollback_result TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (snapshot_id) REFERENCES audit_snapshots(id),
+        FOREIGN KEY (requested_by) REFERENCES users(id),
+        FOREIGN KEY (reviewed_by) REFERENCES users(id)
+      )`);
+
+      db.run(`CREATE TABLE IF NOT EXISTS rollback_approvals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rollback_request_id INTEGER NOT NULL,
+        approval_action TEXT NOT NULL,
+        approval_remark TEXT,
+        approved_by INTEGER NOT NULL,
+        approved_by_name TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (rollback_request_id) REFERENCES rollback_requests(id),
+        FOREIGN KEY (approved_by) REFERENCES users(id)
       )`, (err) => {
         if (err) reject(err);
         else resolve();

@@ -6,6 +6,7 @@ const { authenticate } = require('../middleware/auth');
 const { appointmentCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 const { checkCapacity, linkAppointmentToSlot, unlinkAppointmentFromSlot, findMatchingTimeSlot } = require('../utils/festivalHelper');
+const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit');
 
 const router = express.Router();
 

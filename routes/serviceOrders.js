@@ -4,6 +4,8 @@ const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { serviceOrderCreateValidation, serviceOrderStatusValidation, idParamValidation } = require('../middleware/validator');
+const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
+const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit');
 
 const router = express.Router();
 

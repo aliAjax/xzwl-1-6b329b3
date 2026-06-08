@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const { run } = require('./dbHelper');
+const { createAuditRecord } = require('../utils/audit');
 
 const RESOURCE_TYPES = {
   PLOT: 'plot',

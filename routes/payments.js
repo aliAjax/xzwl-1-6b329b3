@@ -5,6 +5,7 @@ const { success, error, paginate, handleError } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
 const { paymentCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
+const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit');
 
 const router = express.Router();
 

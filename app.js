@@ -24,6 +24,7 @@ const operationLogRoutes = require('./routes/operationLogs');
 const maintenanceOrderRoutes = require('./routes/maintenanceOrders');
 const festivalScheduleRoutes = require('./routes/festivalSchedules');
 const contractRoutes = require('./routes/contracts');
+const auditRoutes = require('./routes/audit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;

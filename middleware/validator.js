@@ -344,6 +344,28 @@ const contractQueryValidation = [
   validate
 ];
 
+const rollbackRequestCreateValidation = [
+  body('snapshot_id').isInt().withMessage('快照ID无效'),
+  body('field_diff_ids').notEmpty().withMessage('字段差异ID不能为空'),
+  body('reason').notEmpty().withMessage('回滚原因不能为空'),
+  validate
+];
+
+const rollbackRequestQueryValidation = [
+  query('status').optional({ checkFalsy: true }).isIn(['pending', 'approved', 'rejected', 'executed', 'failed']).withMessage('状态无效'),
+  query('resource_type').optional({ checkFalsy: true }).isIn(['plot', 'deceased', 'contact', 'payment', 'appointment', 'service_order', 'contract', 'maintenance_order']).withMessage('资源类型无效'),
+  query('requested_by').optional({ checkFalsy: true }).isInt().withMessage('申请人ID无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
+const rollbackApproveValidation = [
+  body('approval_action').isIn(['approve', 'reject']).withMessage('审批操作无效，只能是 approve 或 reject'),
+  body('review_remark').optional({ checkFalsy: true }).isString().withMessage('审批备注必须是字符串'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -387,5 +409,8 @@ module.exports = {
   contractSignValidation,
   contractPayValidation,
   contractVoidValidation,
-  contractQueryValidation
+  contractQueryValidation,
+  rollbackRequestCreateValidation,
+  rollbackRequestQueryValidation,
+  rollbackApproveValidation
 };
