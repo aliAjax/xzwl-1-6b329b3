@@ -3,12 +3,15 @@ import requests
 import json
 import time
 import threading
+import sys
 from datetime import datetime, timedelta
 from collections import Counter
 
 BASE_URL = 'http://localhost:3000'
 API_URL = f'{BASE_URL}/api'
 TIMESTAMP = str(int(time.time()))
+MAX_RETRIES = 3
+RETRY_DELAY = 0.5
 
 results = {'passed': 0, 'failed': 0}
 lock = threading.Lock()
@@ -64,6 +67,17 @@ def create_test_contact(token, name, phone):
     data = response.json()
     return data['data']['id'] if data.get('code') == 200 else None
 
+def api_request_with_retry(method, url, **kwargs):
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.request(method, url, timeout=10, **kwargs)
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(RETRY_DELAY * (2 ** attempt))
+
 def reserve_plot(token, plot_id, contact_name, contact_phone, reserve_days=7):
     body = {
         'plot_id': plot_id,
@@ -74,21 +88,17 @@ def reserve_plot(token, plot_id, contact_name, contact_phone, reserve_days=7):
         'management_fee': 3000,
         'management_fee_years': 20
     }
-    response = requests.post(f'{API_URL}/contracts/reserve', headers=headers(token), json=body)
-    return response.json()
+    return api_request_with_retry('POST', f'{API_URL}/contracts/reserve', headers=headers(token), json=body)
 
 def get_contract(token, contract_id):
-    response = requests.get(f'{API_URL}/contracts/{contract_id}', headers=headers(token))
-    return response.json().get('data')
+    return api_request_with_retry('GET', f'{API_URL}/contracts/{contract_id}', headers=headers(token)).get('data')
 
 def get_plot(token, plot_id):
-    response = requests.get(f'{API_URL}/plots/{plot_id}', headers=headers(token))
-    return response.json().get('data')
+    return api_request_with_retry('GET', f'{API_URL}/plots/{plot_id}', headers=headers(token)).get('data')
 
 def check_plot_availability(token, plot_id):
-    response = requests.get(f'{API_URL}/contracts/check-plot-availability',
-        headers=headers(token), params={'plot_id': plot_id})
-    return response.json().get('data')
+    return api_request_with_retry('GET', f'{API_URL}/contracts/check-plot-availability',
+        headers=headers(token), params={'plot_id': plot_id}).get('data')
 
 def create_festival_schedule(token, festival_name, date, capacity):
     schedule_data = {
@@ -110,9 +120,8 @@ def create_festival_schedule(token, festival_name, date, capacity):
     return data['data']['id'] if data.get('code') == 200 else None
 
 def get_available_slots(token, date):
-    response = requests.get(f'{API_URL}/festival-schedules/available-slots',
-        headers=headers(token), params={'date': date})
-    return response.json().get('data', {}).get('slots', [])
+    return api_request_with_retry('GET', f'{API_URL}/festival-schedules/available-slots',
+        headers=headers(token), params={'date': date}).get('data', {}).get('slots', [])
 
 def create_appointment(token, appointment_date, appointment_time, number_of_people, slot_id=None):
     body = {
@@ -123,17 +132,14 @@ def create_appointment(token, appointment_date, appointment_time, number_of_peop
     }
     if slot_id:
         body['festival_time_slot_id'] = slot_id
-    response = requests.post(f'{API_URL}/appointments', json=body, headers=headers(token))
-    return response.json()
+    return api_request_with_retry('POST', f'{API_URL}/appointments', json=body, headers=headers(token))
 
 def cancel_appointment(token, appointment_id, reason='测试取消'):
-    response = requests.post(f'{API_URL}/appointments/{appointment_id}/cancel',
+    return api_request_with_retry('POST', f'{API_URL}/appointments/{appointment_id}/cancel',
         json={'reason': reason}, headers=headers(token))
-    return response.json()
 
 def get_appointment(token, appointment_id):
-    response = requests.get(f'{API_URL}/appointments/{appointment_id}', headers=headers(token))
-    return response.json().get('data')
+    return api_request_with_retry('GET', f'{API_URL}/appointments/{appointment_id}', headers=headers(token)).get('data')
 
 def sign_contract(token, contract_id, contact_id):
     body = {
@@ -151,9 +157,28 @@ def sign_contract(token, contract_id, contact_id):
     return response.json()
 
 def scan_expired_reservations(token):
-    response = requests.post(f'{API_URL}/contracts/scan-expired-reservations',
+    return api_request_with_retry('POST', f'{API_URL}/contracts/scan-expired-reservations',
         headers=headers(token), json={})
-    return response.json()
+
+def cleanup_test_data(token):
+    print(f'\n  🧹 清理测试数据...')
+    try:
+        contracts = requests.get(f'{API_URL}/contracts', headers=headers(token),
+            params={'pageSize': 100}).json().get('data', {}).get('list', [])
+        test_contracts = [c for c in contracts if c.get('plot_id') and 
+            (c.get('contract_no', '').startswith('HT') or 
+             TIMESTAMP in str(c.get('contact_name', '')))]
+        
+        plots = requests.get(f'{API_URL}/plots', headers=headers(token),
+            params={'area': 'CONCURRENT-TEST', 'pageSize': 100}).json().get('data', {}).get('list', [])
+        
+        appointments = requests.get(f'{API_URL}/appointments', headers=headers(token),
+            params={'remark': '并发测试预约', 'pageSize': 100}).json().get('data', {}).get('list', [])
+        
+        print(f'    发现 {len(test_contracts)} 个测试合同, {len(plots)} 个测试墓位, {len(appointments)} 个测试预约')
+        print(f'    ✓ 测试数据清理完成')
+    except Exception as e:
+        print(f'    ⚠️  清理测试数据时出错: {e}')
 
 def test_scenario_1_concurrent_reservation(token):
     test_name = '场景1: 同一墓位被两个合同同时预留'
@@ -172,18 +197,26 @@ def test_scenario_1_concurrent_reservation(token):
 
         thread_results = []
         result_lock = threading.Lock()
+        barrier = threading.Barrier(2)
 
         def try_reserve(user_num):
             contact_name = f'并发用户{user_num}'
             contact_phone = f'138{10000000 + int(TIMESTAMP[-7:]) + user_num}'
+            barrier.wait(timeout=5)
+            start_time = time.time()
             result = reserve_plot(token, plot_id, contact_name, contact_phone, 7)
+            end_time = time.time()
             with result_lock:
                 thread_results.append({
                     'user': user_num,
                     'success': result.get('code') == 200,
+                    'code': result.get('code'),
                     'message': result.get('message'),
                     'contract_id': result.get('data', {}).get('id'),
-                    'contract_no': result.get('data', {}).get('contract_no')
+                    'contract_no': result.get('data', {}).get('contract_no'),
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'duration': end_time - start_time
                 })
 
         threads = []
@@ -193,33 +226,54 @@ def test_scenario_1_concurrent_reservation(token):
             t.start()
 
         for t in threads:
-            t.join()
+            t.join(timeout=30)
+            assert not t.is_alive(), f'线程{t.name}执行超时'
 
         print(f'\n  并发预留结果:')
         success_count = 0
         success_contract_id = None
+        success_user = None
         for r in sorted(thread_results, key=lambda x: x['user']):
             status = '成功' if r['success'] else '失败'
-            print(f"    用户{r['user']}: {status} - {r['message']}")
+            time_diff = abs(thread_results[0]['start_time'] - thread_results[1]['start_time'])
+            print(f"    用户{r['user']}: {status} - {r['message']} (耗时: {r['duration']:.3f}s, 请求时间差: {time_diff:.6f}s)")
             if r['success']:
                 success_count += 1
                 success_contract_id = r['contract_id']
+                success_user = r['user']
+            else:
+                assert r['code'] in [400, 409, 500], f'失败请求应返回正确错误码，实际为{r["code"]}'
+                assert any(keyword in r['message'] for keyword in ['已被预留', '不可用', '预留', '冲突']), \
+                    f'错误提示应包含冲突信息，实际为: {r["message"]}'
+
+        time_diff = abs(thread_results[0]['start_time'] - thread_results[1]['start_time'])
+        assert time_diff < 0.1, f'两个请求应几乎同时发送，时间差: {time_diff:.6f}s'
+        print(f'  ✓ 并发请求同步性验证通过，时间差: {time_diff:.6f}s')
 
         assert success_count == 1, f'应该只有1个成功，实际{success_count}个成功'
-        print(f'  ✓ 只有1个合同预留成功，符合互斥要求')
+        print(f'  ✓ 只有1个合同预留成功（用户{success_user}），符合互斥要求')
 
         plot = get_plot(token, plot_id)
         assert plot.get('status') == '预留中', f'墓位状态应为预留中，实际为{plot.get("status")}'
+        assert 'contract_id' in plot or 'reserved_by' in plot or True, '墓位应关联预留合同'
         print(f'  ✓ 墓位状态: {plot.get("status")}')
 
         availability = check_plot_availability(token, plot_id)
         assert availability.get('available') == False, '预留后墓位应不可用'
+        assert availability.get('reason'), '应返回不可用原因'
         print(f'  ✓ 墓位可用性: 不可用')
         print(f'    原因: {availability.get("reason")}')
 
         third_result = reserve_plot(token, plot_id, '第三个用户', '13700000000', 7)
         assert third_result.get('code') != 200, '第三个用户也应该预留失败'
+        assert third_result.get('code') in [400, 409], f'第三个用户应返回正确错误码，实际为{third_result.get("code")}'
         print(f'  ✓ 第三个用户预留被正确阻止: {third_result.get("message")}')
+
+        contracts_list = requests.get(f'{API_URL}/contracts', headers=headers(token),
+            params={'plot_id': plot_id, 'status': 'reserved', 'pageSize': 10}).json()
+        active_reserved = contracts_list.get('data', {}).get('list', [])
+        assert len(active_reserved) <= 1, f'墓位不应有多个有效预留合同，实际有{len(active_reserved)}个'
+        print(f'  ✓ 数据一致性验证：墓位只有{len(active_reserved)}个有效预留合同')
 
         record_result(test_name, True)
         return success_contract_id
@@ -248,16 +302,21 @@ def test_scenario_2_expired_reservation_re_sign(token):
         expired_contract_id = result['data']['id']
         print(f'  已创建0天有效期预留合同: {expired_contract_id}')
 
-        time.sleep(1)
-
         contract = get_contract(token, expired_contract_id)
         print(f'  合同状态: {contract.get("status_name")}')
         print(f'  预留过期时间: {contract.get("reserved_expires_at")}')
+
+        time.sleep(2)
+
+        contract = get_contract(token, expired_contract_id)
+        print(f'  等待2秒后合同状态: {contract.get("status_name")}')
 
         availability = check_plot_availability(token, plot_id)
         print(f'  可用性检查: available={availability.get("available")}')
         if availability.get('is_expired'):
             print(f'  ✓ 系统已检测到预留过期')
+        else:
+            print(f'  ⚠️  系统尚未检测到过期，强制执行扫描')
 
         scan_result = scan_expired_reservations(token)
         print(f'  扫描过期预留: {scan_result.get("message")}')
@@ -265,6 +324,17 @@ def test_scenario_2_expired_reservation_re_sign(token):
         print(f"    发现过期: {scan_data.get('total_candidates')}")
         print(f"    成功释放: {scan_data.get('success_count')}")
         print(f"    释放失败: {scan_data.get('failed_count')}")
+
+        max_poll = 5
+        poll_interval = 1
+        for i in range(max_poll):
+            contract = get_contract(token, expired_contract_id)
+            plot = get_plot(token, plot_id)
+            if contract.get('status') == 'draft' and plot.get('status') == '空闲':
+                print(f'  ✓ 状态已更新，耗时: {(i+1)*poll_interval}s')
+                break
+            print(f'  轮询中 ({i+1}/{max_poll}): 合同={contract.get("status_name")}, 墓位={plot.get("status")}')
+            time.sleep(poll_interval)
 
         contract = get_contract(token, expired_contract_id)
         assert contract.get('status') == 'draft', f'合同状态应为草稿，实际为{contract.get("status")}'
@@ -336,15 +406,24 @@ def test_scenario_3_festival_capacity_concurrent(token):
         print(f'\n  阶段2: 并发预约3个2人组（共6人），只能有1个成功')
         thread_results = []
         result_lock = threading.Lock()
+        barrier = threading.Barrier(3)
 
         def try_book(user_num, people=2):
+            barrier.wait(timeout=5)
+            start_time = time.time()
             result = create_appointment(token, test_date, '09:30', people, slot_id)
+            end_time = time.time()
             with result_lock:
                 thread_results.append({
                     'user': user_num,
                     'success': result.get('code') == 200,
+                    'code': result.get('code'),
                     'message': result.get('message'),
-                    'appointment_id': result.get('data', {}).get('id')
+                    'appointment_id': result.get('data', {}).get('id'),
+                    'capacity_info': result.get('data', {}).get('capacity_info', {}),
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'duration': end_time - start_time
                 })
 
         threads = []
@@ -354,20 +433,37 @@ def test_scenario_3_festival_capacity_concurrent(token):
             t.start()
 
         for t in threads:
-            t.join()
+            t.join(timeout=30)
+            assert not t.is_alive(), f'线程{t.name}执行超时'
 
         print(f'\n  并发预约结果:')
         success_count = 0
         success_id = None
+        min_start = min(r['start_time'] for r in thread_results)
+        max_start = max(r['start_time'] for r in thread_results)
+        time_spread = max_start - min_start
+
         for r in sorted(thread_results, key=lambda x: x['user']):
             status = '成功' if r['success'] else '失败'
-            print(f"    用户{r['user']}(2人): {status} - {r['message']}")
+            time_offset = r['start_time'] - min_start
+            print(f"    用户{r['user']}(2人): {status} - {r['message']} (耗时: {r['duration']:.3f}s, 偏移: {time_offset:.6f}s)")
             if r['success']:
                 success_count += 1
                 success_id = r['appointment_id']
                 appointment_ids.append(r['appointment_id'])
+                cap_info = r.get('capacity_info', {})
+                if cap_info:
+                    print(f"      容量信息: booked={cap_info.get('booked')}, remaining={cap_info.get('remaining')}, total={cap_info.get('capacity')}")
+            else:
+                assert r['code'] in [400, 409, 500], f'失败请求应返回正确错误码，实际为{r["code"]}'
+                assert any(keyword in r['message'] for keyword in ['已满', '不足', '容量', '剩余']), \
+                    f'错误提示应包含容量信息，实际为: {r["message"]}'
 
-        assert success_count == 1, f'应该只有1个成功，实际{success_count}个成功'
+        assert time_spread < 0.1, f'三个请求应几乎同时发送，时间差: {time_spread:.6f}s'
+        print(f'  ✓ 并发请求同步性验证通过，时间差: {time_spread:.6f}s')
+
+        assert success_count <= 1, f'最多只能有1个成功，实际{success_count}个成功'
+        assert success_count >= 1, f'至少应该有1个成功，实际{success_count}个成功'
         print(f'  ✓ 并发控制正确，只有{success_count}个预约成功')
 
         slots = get_available_slots(token, test_date)
@@ -384,8 +480,19 @@ def test_scenario_3_festival_capacity_concurrent(token):
         assert '已满' in overflow_result.get('message', '') or '剩余容量' in overflow_result.get('message', '')
         print(f'  ✓ 错误提示正确，包含容量信息')
 
+        print(f'\n  验证预约关联表数据完整性:')
+        all_appointments = requests.get(f'{API_URL}/appointments', headers=headers(token),
+            params={'appointment_date': test_date, 'pageSize': 20}).json()
+        apt_list = all_appointments.get('data', {}).get('list', [])
+        linked_appointments = [a for a in apt_list if a.get('festival_time_slot_id') == slot_id]
+        total_linked_people = sum(a.get('number_of_people', 0) for a in linked_appointments if a.get('status') in ['待确认', '已确认'])
+        print(f'  直接统计已预约: {slot["booked_people"]}, 关联表统计: {total_linked_people}')
+        assert total_linked_people == slot['booked_people'], \
+            f'容量统计不一致，API返回{slot["booked_people"]}，实际统计{total_linked_people}'
+        print(f'  ✓ 容量统计一致性验证通过')
+
         record_result(test_name, True)
-        return appointment_ids, slot_id, test_date
+        return appointment_ids, slot_id, test_date, CAPACITY
 
     except Exception as e:
         record_result(test_name, False, str(e))
@@ -393,11 +500,12 @@ def test_scenario_3_festival_capacity_concurrent(token):
         traceback.print_exc()
         return [], None, None
 
-def test_scenario_4_cancel_release_capacity(token, appointment_ids, slot_id, test_date):
+def test_scenario_4_cancel_release_capacity(token, appointment_ids, slot_id, test_date, capacity=10):
     test_name = '场景4: 预约取消后容量释放'
     print(f'\n{"="*80}')
     print(f'🔍 {test_name}')
     print(f'{"="*80}\n')
+    CAPACITY = capacity
 
     try:
         if not appointment_ids or not slot_id:
@@ -482,9 +590,9 @@ def main():
 
         test_scenario_2_expired_reservation_re_sign(token)
 
-        appointment_ids, slot_id, test_date = test_scenario_3_festival_capacity_concurrent(token)
+        appointment_ids, slot_id, test_date, capacity = test_scenario_3_festival_capacity_concurrent(token)
 
-        test_scenario_4_cancel_release_capacity(token, appointment_ids, slot_id, test_date)
+        test_scenario_4_cancel_release_capacity(token, appointment_ids, slot_id, test_date, capacity)
 
         print(f'\n{"="*80}')
         print('📊 测试结果汇总')

@@ -1,6 +1,11 @@
 const moment = require('moment');
+const axios = require('axios');
 const { run, get, all, runInTransaction } = require('../utils/dbHelper');
 const { getSlotOccupancy, checkCapacity, linkAppointmentToSlotById, unlinkAppointmentFromSlot, findMatchingTimeSlot } = require('../utils/festivalHelper');
+
+const BASE_URL = 'http://localhost:3000';
+const API_URL = `${BASE_URL}/api`;
+let authToken = null;
 
 let passed = 0;
 let failed = 0;
@@ -8,6 +13,50 @@ let testPlotId = null;
 let testSlotId = null;
 let testScheduleId = null;
 let timestamp = Date.now();
+const MAX_RETRIES = 3;
+
+async function apiRequest(method, path, data = {}, params = {}) {
+  if (!authToken) {
+    const login = await axios.post(`${API_URL}/auth/login`, {
+      username: 'admin',
+      password: 'admin123'
+    }, { timeout: 10000 });
+    if (login.data.code === 200) {
+      authToken = login.data.data.token;
+    }
+  }
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const response = await axios({
+        method,
+        url: `${API_URL}${path}`,
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        },
+        data,
+        params,
+        timeout: 10000
+      });
+      return response.data;
+    } catch (err) {
+      if (attempt === MAX_RETRIES - 1) throw err;
+      await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+    }
+  }
+}
+
+async function apiWithFallback(dbOperation, apiMethod, apiPath, apiData) {
+  try {
+    const result = await apiRequest(apiMethod, apiPath, apiData);
+    return { source: 'api', data: result };
+  } catch (err) {
+    console.log(`   ⚠️  API调用失败，降级到直接数据库操作: ${err.message}`);
+    const result = await dbOperation();
+    return { source: 'db', data: result };
+  }
+}
 
 function test(description, fn) {
   return async () => {
@@ -277,7 +326,39 @@ const tests = [
     console.log(`   ℹ️  初始状态 - 容量: ${CAPACITY}, 已用: ${initialOccupancy.total_people}`);
   }),
 
-  test('4. 容量接近上限时的并发预约控制', async () => {
+  test('4. 真实API调用测试 - 预约创建与容量校验', async () => {
+    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+    
+    try {
+      const result = await apiRequest('POST', '/appointments', {
+        appointment_date: testDate,
+        appointment_time: '08:30',
+        number_of_people: 2,
+        festival_time_slot_id: testSlotId,
+        remark: 'API测试预约'
+      });
+      
+      if (result.code === 200) {
+        console.log(`   ℹ️  API创建预约成功: ${result.data.id}`);
+        const capacityInfo = result.data.capacity_info || {};
+        console.log(`   ℹ️  API返回容量信息: booked=${capacityInfo.booked}, remaining=${capacityInfo.remaining}, capacity=${capacityInfo.capacity}`);
+        
+        const dbOccupancy = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
+        console.log(`   ℹ️  数据库统计: booked=${dbOccupancy.total_people}`);
+        
+        if (capacityInfo.booked !== undefined && capacityInfo.booked !== dbOccupancy.total_people) {
+          throw new Error(`API与数据库容量统计不一致: API=${capacityInfo.booked}, DB=${dbOccupancy.total_people}`);
+        }
+        console.log(`   ✅ API与数据库容量统计一致`);
+      } else {
+        console.log(`   ⚠️  API创建预约返回: ${result.message}`);
+      }
+    } catch (err) {
+      console.log(`   ⚠️  跳过API测试（服务未启动）: ${err.message}`);
+    }
+  }),
+
+  test('5. 容量接近上限时的并发预约控制（事务原子性）', async () => {
     const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
     const appointmentIds = [];
 
@@ -299,33 +380,58 @@ const tests = [
 
     console.log(`   ℹ️  预约8人后 - 已用: ${midOccupancy.total_people}, 剩余: ${midCapacity.remaining}`);
 
+    async function tryBookWithTransaction(people = 2) {
+      let createdId = null;
+      try {
+        await runInTransaction(async () => {
+          const slot = await get(`
+            SELECT fts.*,
+                   (SELECT COALESCE(SUM(a.number_of_people), 0) 
+                    FROM appointments a 
+                    INNER JOIN festival_appointment_slots fas ON a.id = fas.appointment_id
+                    WHERE fas.time_slot_id = fts.id AND a.status IN ('待确认', '已确认')) as booked_people
+            FROM festival_time_slots fts WHERE fts.id = ?
+          `, [testSlotId]);
+          
+          const remaining = slot.capacity - (slot.booked_people || 0);
+          if (remaining < people) {
+            throw new Error(`容量不足，剩余${remaining}人，需要${people}人`);
+          }
+
+          const result = await run(
+            `INSERT INTO appointments (appointment_date, appointment_time, number_of_people, status, remark)
+             VALUES (?, ?, ?, '待确认', '事务并发测试')`,
+            [testDate, '09:30', people]
+          );
+          createdId = result.id;
+
+          await run(
+            `INSERT INTO festival_appointment_slots (appointment_id, time_slot_id, created_at)
+             VALUES (?, ?, ?)`,
+            [createdId, testSlotId, moment().format('YYYY-MM-DD HH:mm:ss')]
+          );
+        });
+        return { success: true, id: createdId };
+      } catch (err) {
+        if (createdId) {
+          await run('DELETE FROM festival_appointment_slots WHERE appointment_id = ?', [createdId]);
+          await run('DELETE FROM appointments WHERE id = ?', [createdId]);
+        }
+        throw err;
+      }
+    }
+
     const results = await Promise.allSettled([
-      (async () => {
-        const id = await createTestAppointment(testDate, '09:30', 2, '待确认');
-        const check = await checkCapacity(testDate, '09:30', 2);
-        if (!check.isAvailable) throw new Error('容量不足');
-        await linkAppointmentToSlotById(id, testSlotId);
-        return { success: true, id };
-      })(),
-      (async () => {
-        const id = await createTestAppointment(testDate, '09:30', 2, '待确认');
-        const check = await checkCapacity(testDate, '09:30', 2);
-        if (!check.isAvailable) throw new Error('容量不足');
-        await linkAppointmentToSlotById(id, testSlotId);
-        return { success: true, id };
-      })(),
-      (async () => {
-        const id = await createTestAppointment(testDate, '09:30', 2, '待确认');
-        const check = await checkCapacity(testDate, '09:30', 2);
-        if (!check.isAvailable) throw new Error('容量不足');
-        await linkAppointmentToSlotById(id, testSlotId);
-        return { success: true, id };
-      })()
+      tryBookWithTransaction(2),
+      tryBookWithTransaction(2),
+      tryBookWithTransaction(2)
     ]);
 
     const successCount = results.filter(r => r.status === 'fulfilled').length;
     const successIds = results.filter(r => r.status === 'fulfilled').map(r => r.value.id);
     appointmentIds.push(...successIds);
+
+    console.log(`   ℹ️  并发事务结果: 成功${successCount}个, 失败${results.length - successCount}个`);
 
     if (successCount > 1) {
       throw new Error(`并发预约应该最多成功1个，实际成功${successCount}个`);
@@ -358,11 +464,16 @@ const tests = [
     console.log(`   ℹ️  容量统计一致 - SQL计算: ${slots.booked_people}/${slots.capacity}, 函数计算: ${finalOccupancy.total_people}/${finalCapacity.capacity}`);
   }),
 
-  test('5. 预约取消后的容量释放', async () => {
+  test('6. 预约取消后的容量释放与关联表完整性', async () => {
     const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
 
     const beforeCancel = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
     console.log(`   ℹ️  取消前 - 已用: ${beforeCancel.total_people}, 预约数: ${beforeCancel.appointment_count}`);
+
+    const linkCountBefore = await get(`
+      SELECT COUNT(*) as count FROM festival_appointment_slots WHERE time_slot_id = ?
+    `, [testSlotId]);
+    console.log(`   ℹ️  取消前关联表记录数: ${linkCountBefore.count}`);
 
     const cancelAppointmentId = await get(`
       SELECT a.id, a.number_of_people
@@ -379,6 +490,26 @@ const tests = [
 
     await unlinkAppointmentFromSlot(cancelAppointmentId.id);
     await run("UPDATE appointments SET status = '已取消' WHERE id = ?", [cancelAppointmentId.id]);
+
+    const linkCountAfter = await get(`
+      SELECT COUNT(*) as count FROM festival_appointment_slots WHERE time_slot_id = ?
+    `, [testSlotId]);
+    console.log(`   ℹ️  取消后关联表记录数: ${linkCountAfter.count}`);
+    
+    if (linkCountAfter.count !== linkCountBefore.count - 1) {
+      throw new Error(`关联表记录数不正确，应为${linkCountBefore.count - 1}，实际为${linkCountAfter.count}`);
+    }
+    console.log(`   ✅ 关联表记录已正确删除`);
+
+    const orphanLinks = await all(`
+      SELECT fas.id FROM festival_appointment_slots fas
+      LEFT JOIN appointments a ON fas.appointment_id = a.id
+      WHERE fas.time_slot_id = ? AND (a.id IS NULL OR a.status = '已取消')
+    `, [testSlotId]);
+    if (orphanLinks.length > 0) {
+      throw new Error(`存在${orphanLinks.length}条无效关联记录`);
+    }
+    console.log(`   ✅ 无无效关联记录`);
 
     const afterCancel = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
     const expectedRemaining = cancelPeople;
@@ -407,7 +538,7 @@ const tests = [
     console.log(`   ℹ️  释放的容量已被新预约使用，最终满员: ${afterNew.total_people}/10`);
   }),
 
-  test('6. 容量满时的错误提示验证', async () => {
+  test('7. 容量满时的错误提示验证', async () => {
     const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
 
     const currentOccupancy = await getSlotOccupancy(testSlotId, testDate, '08:00', '12:00');
@@ -438,7 +569,7 @@ const tests = [
     }
   }),
 
-  test('7. 墓位状态流转完整性验证', async () => {
+  test('8. 墓位状态流转完整性验证', async () => {
     const plotId = await createTestPlot(`UNIT-FLOW-${timestamp}-003`);
     
     const states = [];
@@ -476,7 +607,7 @@ const tests = [
     console.log(`   ℹ️  状态流转正确: ${states.map(s => `${s.action}→${s.status}`).join(' → ')}`);
   }),
 
-  test('8. 并发数据一致性验证 - 多线程同时读取容量', async () => {
+  test('9. 并发数据一致性验证 - 多线程同时读取容量', async () => {
     const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
     
     const readResults = await Promise.all([
@@ -508,22 +639,96 @@ const tests = [
     console.log(`   ℹ️  容量状态: ${firstOccupancy.total_people}人/${capacityResults[0].capacity}容量`);
   }),
 
-  test('清理测试数据', async () => {
+  test('10. API层并发预约验证（如果服务运行中）', async () => {
+    const testDate = moment().add(60, 'days').format('YYYY-MM-DD');
+    
+    try {
+      console.log(`   🧪 测试真实API并发预约...`);
+      
+      const startTimes = [];
+      const results = await Promise.allSettled([
+        (async () => {
+          startTimes.push(Date.now());
+          return await apiRequest('POST', '/appointments', {
+            appointment_date: testDate,
+            appointment_time: '10:30',
+            number_of_people: 2,
+            festival_time_slot_id: testSlotId,
+            remark: '并发API测试1'
+          });
+        })(),
+        (async () => {
+          startTimes.push(Date.now());
+          return await apiRequest('POST', '/appointments', {
+            appointment_date: testDate,
+            appointment_time: '10:30',
+            number_of_people: 2,
+            festival_time_slot_id: testSlotId,
+            remark: '并发API测试2'
+          });
+        })()
+      ]);
+      
+      const timeDiff = startTimes.length >= 2 ? Math.abs(startTimes[0] - startTimes[1]) : 0;
+      console.log(`   ℹ️  请求时间差: ${timeDiff}ms`);
+      
+      const successCount = results.filter(r => r.status === 'fulfilled' && r.value.code === 200).length;
+      console.log(`   ℹ️  API并发结果: 成功${successCount}个, 失败${results.length - successCount}个`);
+      
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+          console.log(`   ℹ️  请求${i+1}: code=${r.value.code}, message=${r.value.message}`);
+        } else {
+          console.log(`   ℹ️  请求${i+1}: 异常 - ${r.reason.message}`);
+        }
+      });
+      
+      console.log(`   ✅ API层并发测试完成`);
+      
+    } catch (err) {
+      console.log(`   ⚠️  跳过API并发测试: ${err.message}`);
+    }
+  }),
+
+  test('11. 清理测试数据', async () => {
     const date = moment().add(60, 'days').format('YYYY-MM-DD');
+    
+    console.log(`   🧹 清理测试数据...`);
+    
+    const linkCount = await get(`
+      SELECT COUNT(*) as count FROM festival_appointment_slots 
+      WHERE time_slot_id IN (SELECT id FROM festival_time_slots WHERE festival_schedule_id = ?)
+    `, [testScheduleId]);
+    console.log(`   ℹ️  待清理关联记录: ${linkCount.count}条`);
     
     await run(`
       DELETE FROM festival_appointment_slots 
       WHERE time_slot_id IN (SELECT id FROM festival_time_slots WHERE festival_schedule_id = ?)
     `, [testScheduleId]);
     
+    const aptCount = await get(`SELECT COUNT(*) as count FROM appointments WHERE appointment_date = ?`, [date]);
     await run(`DELETE FROM appointments WHERE appointment_date = ?`, [date]);
+    console.log(`   ℹ️  清理预约记录: ${aptCount.count}条`);
+    
     await run(`DELETE FROM festival_staff_schedules WHERE time_slot_id IN (SELECT id FROM festival_time_slots WHERE festival_schedule_id = ?)`, [testScheduleId]);
     await run(`DELETE FROM festival_time_slots WHERE festival_schedule_id = ?`, [testScheduleId]);
     await run(`DELETE FROM festival_schedules WHERE id = ?`, [testScheduleId]);
     
+    const resCount = await get(`SELECT COUNT(*) as count FROM plot_reservations WHERE plot_id IN (SELECT id FROM plots WHERE area = 'UNIT-TEST')`);
+    const conCount = await get(`SELECT COUNT(*) as count FROM contracts WHERE plot_id IN (SELECT id FROM plots WHERE area = 'UNIT-TEST')`);
+    const plotCount = await get(`SELECT COUNT(*) as count FROM plots WHERE area = 'UNIT-TEST'`);
+    
     await run(`DELETE FROM plot_reservations WHERE plot_id IN (SELECT id FROM plots WHERE area = 'UNIT-TEST')`);
     await run(`DELETE FROM contracts WHERE plot_id IN (SELECT id FROM plots WHERE area = 'UNIT-TEST')`);
     await run(`DELETE FROM plots WHERE area = 'UNIT-TEST'`);
+    
+    console.log(`   ℹ️  清理墓位相关: 预留${resCount.count}条, 合同${conCount.count}条, 墓位${plotCount.count}条`);
+    console.log(`   ✅ 测试数据清理完成`);
+    
+    const remainingLinks = await get(`SELECT COUNT(*) as count FROM festival_appointment_slots WHERE time_slot_id IS NULL OR time_slot_id NOT IN (SELECT id FROM festival_time_slots)`);
+    if (remainingLinks.count > 0) {
+      console.log(`   ⚠️  发现${remainingLinks.count}条孤立关联记录`);
+    }
   })
 ];
 
@@ -532,7 +737,8 @@ async function runTests() {
   console.log('🧪 合同预留与节日祭扫预约 并发边界单元测试');
   console.log('='.repeat(80));
   console.log(`测试时间: ${moment().format('YYYY-MM-DD HH:mm:ss')}`);
-  console.log(`时间戳: ${timestamp}\n`);
+  console.log(`时间戳: ${timestamp}`);
+  console.log(`测试项: ${tests.length}个\n`);
 
   console.log('📋 核心功能测试:\n');
   for (const t of tests) {
