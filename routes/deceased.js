@@ -255,8 +255,19 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     });
 
     const newData = { name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark };
+
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.DECEASED,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     const summary = generateSummary(RESOURCE_TYPES.DECEASED, ACTIONS.UPDATE, newData, existing);
-    await logOperation(req, RESOURCE_TYPES.DECEASED, id, ACTIONS.UPDATE, summary);
+    await logOperation(req, RESOURCE_TYPES.DECEASED, id, ACTIONS.UPDATE, summary, snapshotId);
     
     success(res, null, '逝者信息更新成功');
   } catch (err) {

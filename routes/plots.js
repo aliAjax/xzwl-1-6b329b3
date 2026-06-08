@@ -321,13 +321,23 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     let action = ACTIONS.UPDATE;
     let summary;
 
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.PLOT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     if (existing.status !== status) {
       action = ACTIONS.STATUS_CHANGE;
       summary = generateSummary(RESOURCE_TYPES.PLOT, ACTIONS.STATUS_CHANGE, newData, existing);
     } else {
       summary = generateSummary(RESOURCE_TYPES.PLOT, ACTIONS.UPDATE, newData, existing);
     }
-    await logOperation(req, RESOURCE_TYPES.PLOT, id, action, summary);
+    await logOperation(req, RESOURCE_TYPES.PLOT, id, action, summary, snapshotId);
     
     success(res, null, '墓位更新成功');
   } catch (err) {

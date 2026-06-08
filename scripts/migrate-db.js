@@ -569,50 +569,143 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
     log('audit_snapshots 表已就绪');
 
     await new Promise((resolve, reject) => {
-      db.run(`CREATE TABLE IF NOT EXISTS audit_field_diffs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        snapshot_id INTEGER NOT NULL,
-        resource_type TEXT NOT NULL,
-        resource_id INTEGER NOT NULL,
-        field_name TEXT NOT NULL,
-        old_value TEXT,
-        new_value TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (snapshot_id) REFERENCES audit_snapshots(id)
-      )`, (err) => {
+      db.run(`DROP TABLE IF EXISTS audit_field_diffs`, (err) => {
         if (err) reject(err);
         else resolve();
       });
     });
-    log('audit_field_diffs 表已就绪');
+    log('已删除损坏的 audit_field_diffs 表（如果存在）');
+
+    const auditFieldChangesColumns = await new Promise((resolve, reject) => {
+      db.all(`PRAGMA table_info(audit_field_changes)`, (err, columns) => {
+        if (err) reject(err);
+        else resolve(columns.map(c => c.name));
+      });
+    });
+
+    const hasResourceType = auditFieldChangesColumns.includes('resource_type');
+    const hasResourceId = auditFieldChangesColumns.includes('resource_id');
+
+    if (hasResourceType && hasResourceId) {
+      log('audit_field_changes 表结构正确，跳过重建');
+    } else {
+      await new Promise((resolve, reject) => {
+        db.run(`DROP TABLE IF EXISTS audit_field_changes`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已删除旧的 audit_field_changes 表（结构不完整）');
+
+      await new Promise((resolve, reject) => {
+        db.run(`CREATE TABLE IF NOT EXISTS audit_field_changes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          snapshot_id INTEGER NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id INTEGER NOT NULL,
+          field_name TEXT NOT NULL,
+          old_value TEXT,
+          new_value TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (snapshot_id) REFERENCES audit_snapshots(id)
+        )`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已重新创建 audit_field_changes 表（包含 resource_type 和 resource_id 字段）');
+    }
 
     await new Promise((resolve, reject) => {
       db.run(`CREATE TABLE IF NOT EXISTS rollback_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_id INTEGER NOT NULL,
-        field_diff_ids TEXT NOT NULL,
+        field_changes TEXT,
         resource_type TEXT NOT NULL,
         resource_id INTEGER NOT NULL,
         reason TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
-        requested_by INTEGER NOT NULL,
-        requested_by_name TEXT NOT NULL,
-        reviewed_by INTEGER,
-        reviewed_by_name TEXT,
-        reviewed_at DATETIME,
-        review_remark TEXT,
-        rollback_executed_at DATETIME,
-        rollback_result TEXT,
+        requester_id INTEGER NOT NULL,
+        requester_name TEXT NOT NULL,
+        approver_id INTEGER,
+        approver_name TEXT,
+        approval_remark TEXT,
+        conflict_info TEXT,
+        requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        approved_at DATETIME,
+        executed_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (snapshot_id) REFERENCES audit_snapshots(id),
-        FOREIGN KEY (requested_by) REFERENCES users(id),
-        FOREIGN KEY (reviewed_by) REFERENCES users(id)
+        FOREIGN KEY (requester_id) REFERENCES users(id),
+        FOREIGN KEY (approver_id) REFERENCES users(id)
       )`, (err) => {
         if (err) reject(err);
         else resolve();
       });
     });
     log('rollback_requests 表已就绪');
+
+    const rollbackColumns = [
+      'field_changes', 'reason', 'status', 'requester_id', 'requester_name',
+      'approver_id', 'approver_name', 'approval_remark', 'conflict_info',
+      'requested_at', 'approved_at', 'executed_at'
+    ];
+
+    for (const column of rollbackColumns) {
+      const columnExists = await checkColumn('rollback_requests', column);
+      if (!columnExists) {
+        let columnDef = '';
+        switch (column) {
+          case 'field_changes':
+            columnDef = 'TEXT';
+            break;
+          case 'reason':
+            columnDef = 'TEXT NOT NULL';
+            break;
+          case 'status':
+            columnDef = "TEXT NOT NULL DEFAULT 'pending'";
+            break;
+          case 'requester_id':
+            columnDef = 'INTEGER NOT NULL';
+            break;
+          case 'requester_name':
+            columnDef = 'TEXT NOT NULL';
+            break;
+          case 'approver_id':
+            columnDef = 'INTEGER';
+            break;
+          case 'approver_name':
+            columnDef = 'TEXT';
+            break;
+          case 'approval_remark':
+            columnDef = 'TEXT';
+            break;
+          case 'conflict_info':
+            columnDef = 'TEXT';
+            break;
+          case 'requested_at':
+            columnDef = 'DATETIME DEFAULT CURRENT_TIMESTAMP';
+            break;
+          case 'approved_at':
+            columnDef = 'DATETIME';
+            break;
+          case 'executed_at':
+            columnDef = 'DATETIME';
+            break;
+          default:
+            columnDef = 'TEXT';
+        }
+        await new Promise((resolve, reject) => {
+          db.run(`ALTER TABLE rollback_requests ADD COLUMN ${column} ${columnDef}`, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+        log(`已添加 rollback_requests.${column} 字段`);
+      } else {
+        log(`rollback_requests.${column} 字段已存在，跳过`);
+      }
+    }
 
     await new Promise((resolve, reject) => {
       db.run(`CREATE TABLE IF NOT EXISTS rollback_approvals (

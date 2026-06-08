@@ -262,8 +262,19 @@ router.post('/:id/confirm', authenticate, idParamValidation, async (req, res) =>
     await run('UPDATE appointments SET status = "已确认" WHERE id = ?', [id]);
 
     const newData = { status: '已确认' };
+
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.APPOINTMENT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
-    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary, snapshotId);
 
     success(res, null, '预约已确认');
   } catch (err) {
@@ -287,8 +298,19 @@ router.post('/:id/complete', authenticate, idParamValidation, async (req, res) =
     await run('UPDATE appointments SET status = "已完成" WHERE id = ?', [id]);
 
     const newData = { status: '已完成' };
+
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.APPOINTMENT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
-    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary, snapshotId);
 
     success(res, null, '预约已完成');
   } catch (err) {
@@ -316,8 +338,19 @@ router.post('/:id/cancel', authenticate, idParamValidation, async (req, res) => 
     await unlinkAppointmentFromSlot(id);
 
     const newData = { status: '已取消', remark };
+
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.APPOINTMENT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     const summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
-    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, ACTIONS.STATUS_CHANGE, summary, snapshotId);
 
     success(res, null, '预约已取消');
   } catch (err) {
@@ -446,13 +479,23 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     let action = ACTIONS.UPDATE;
     let summary;
 
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.APPOINTMENT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     if (existing.status !== newStatus) {
       action = ACTIONS.STATUS_CHANGE;
       summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.STATUS_CHANGE, newData, existing);
     } else {
       summary = generateSummary(RESOURCE_TYPES.APPOINTMENT, ACTIONS.UPDATE, newData, existing);
     }
-    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, action, summary);
+    await logOperation(req, RESOURCE_TYPES.APPOINTMENT, id, action, summary, snapshotId);
     
     success(res, null, '预约更新成功');
   } catch (err) {

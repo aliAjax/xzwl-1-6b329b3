@@ -25,6 +25,7 @@ const maintenanceOrderRoutes = require('./routes/maintenanceOrders');
 const festivalScheduleRoutes = require('./routes/festivalSchedules');
 const contractRoutes = require('./routes/contracts');
 const auditRoutes = require('./routes/audit');
+const rollbackRoutes = require('./routes/rollback');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +52,8 @@ app.use('/api/operation-logs', operationLogRoutes);
 app.use('/api/maintenance-orders', maintenanceOrderRoutes);
 app.use('/api/festival-schedules', festivalScheduleRoutes);
 app.use('/api/contracts', contractRoutes);
+app.use('/api/audit', auditRoutes);
+app.use('/api/rollback/requests', rollbackRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({

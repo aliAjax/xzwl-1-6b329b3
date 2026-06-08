@@ -461,8 +461,19 @@ router.post('/:id/pay', authenticate, idParamValidation, async (req, res) => {
     });
 
     const newData = { status: '已缴', payment_date: payDate, payment_method, amount: payAmount, fee_category: finalFeeCategory };
+
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.PAYMENT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     const summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.STATUS_CHANGE, newData, existing);
-    await logOperation(req, RESOURCE_TYPES.PAYMENT, id, ACTIONS.STATUS_CHANGE, summary);
+    await logOperation(req, RESOURCE_TYPES.PAYMENT, id, ACTIONS.STATUS_CHANGE, summary, snapshotId);
     
     let message = '缴费成功';
     if (existing.contract_id) {
@@ -501,13 +512,23 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     let action = ACTIONS.UPDATE;
     let summary;
 
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.PAYMENT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     if (existing.status !== status) {
       action = ACTIONS.STATUS_CHANGE;
       summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.STATUS_CHANGE, newData, existing);
     } else {
       summary = generateSummary(RESOURCE_TYPES.PAYMENT, ACTIONS.UPDATE, newData, existing);
     }
-    await logOperation(req, RESOURCE_TYPES.PAYMENT, id, action, summary);
+    await logOperation(req, RESOURCE_TYPES.PAYMENT, id, action, summary, snapshotId);
     
     success(res, null, '缴费记录更新成功');
   } catch (err) {

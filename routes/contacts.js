@@ -130,8 +130,19 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     );
 
     const newData = { name, phone, id_card, address, relationship, deceased_id, remark };
+
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.CONTACT,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
     const summary = generateSummary(RESOURCE_TYPES.CONTACT, ACTIONS.UPDATE, newData, existing);
-    await logOperation(req, RESOURCE_TYPES.CONTACT, id, ACTIONS.UPDATE, summary);
+    await logOperation(req, RESOURCE_TYPES.CONTACT, id, ACTIONS.UPDATE, summary, snapshotId);
     
     success(res, null, '联系人更新成功');
   } catch (err) {

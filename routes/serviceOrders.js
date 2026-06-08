@@ -350,6 +350,20 @@ router.put('/:id/status', authenticate, idParamValidation, serviceOrderStatusVal
       'UPDATE service_orders SET status = ?, operator_id = ?, completed_at = ?, remark = ? WHERE id = ?',
       [status, operator_id, completed_at, finalRemark || null, id]
     );
+
+    const newData = { status, operator_id, completed_at, remark: finalRemark };
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.SERVICE_ORDER,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
+    const summary = generateSummary(RESOURCE_TYPES.SERVICE_ORDER, ACTIONS.STATUS_CHANGE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.SERVICE_ORDER, id, ACTIONS.STATUS_CHANGE, summary, snapshotId);
     
     success(res, null, '订单状态更新成功');
   } catch (err) {
@@ -415,6 +429,20 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
        contact_name, contact_phone, service_date, service_time, 
        quantity || existing.quantity, finalUnitPrice, finalTotalAmount, remark, id]
     );
+
+    const newData = { service_item_id, contact_id, plot_id, appointment_id, contact_name, contact_phone, service_date, service_time, quantity, unit_price: finalUnitPrice, total_amount: finalTotalAmount, remark };
+    const auditResult = await createAuditSnapshot(
+      AUDITED_RESOURCE_TYPES.SERVICE_ORDER,
+      id,
+      existing,
+      newData,
+      req,
+      null
+    );
+    const snapshotId = auditResult?.snapshotId || null;
+
+    const summary = generateSummary(RESOURCE_TYPES.SERVICE_ORDER, ACTIONS.UPDATE, newData, existing);
+    await logOperation(req, RESOURCE_TYPES.SERVICE_ORDER, id, ACTIONS.UPDATE, summary, snapshotId);
     
     success(res, null, '服务订单更新成功');
   } catch (err) {
