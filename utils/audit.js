@@ -106,9 +106,19 @@ const normalizeValue = (value) => {
   return String(value);
 };
 
-const denormalizeValue = (value) => {
+const NUMERIC_FIELDS = {
+  plot: ['price', 'row', 'col'],
+  payment: ['amount', 'plot_id', 'contact_id'],
+  appointment: ['number_of_people', 'contact_id', 'plot_id'],
+  service_order: ['quantity', 'total_amount', 'contact_id', 'plot_id'],
+  deceased: ['plot_id'],
+  contact: ['deceased_id']
+};
+
+const denormalizeFieldValue = (value, resourceType, fieldName) => {
   if (value === null || value === 'null') return null;
-  if (value !== null && !isNaN(parseFloat(value)) && Number(value).toString() === value) {
+  const numericFields = NUMERIC_FIELDS[resourceType] || [];
+  if (numericFields.includes(fieldName) && value !== '' && !Number.isNaN(Number(value))) {
     return Number(value);
   }
   return value;
@@ -410,7 +420,7 @@ const executeRollback = async (snapshotId, fieldNames, userId, userName) => {
       for (const change of fieldChanges) {
         updateFields.push(`${change.field_name} = ?`);
         
-        const valueToRestore = denormalizeValue(change.old_value);
+        const valueToRestore = denormalizeFieldValue(change.old_value, snapshot.resource_type, change.field_name);
         updateParams.push(valueToRestore);
 
         rollbackOldData[change.field_name] = currentData[change.field_name];

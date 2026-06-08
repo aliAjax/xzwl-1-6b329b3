@@ -1,6 +1,4 @@
-const db = require('../config/database');
 const { run } = require('./dbHelper');
-const { createAuditRecord } = require('../utils/audit');
 
 const RESOURCE_TYPES = {
   PLOT: 'plot',
@@ -28,25 +26,35 @@ const ACTIONS = {
 };
 
 const getClientIp = (req) => {
-  const xForwardedFor = req.headers['x-forwarded-for'];
+  const xForwardedFor = req?.headers?.['x-forwarded-for'];
   if (xForwardedFor) {
     return xForwardedFor.split(',')[0].trim();
   }
-  return req.ip || req.connection.remoteAddress || '';
+  return req?.ip || req?.connection?.remoteAddress || '';
 };
 
-const logOperation = async (req, resourceType, resourceId, action, summary) => {
+const logOperation = async (req, resourceType, resourceId, action, summary, snapshotId = null) => {
   try {
     const userId = req.user?.id;
     const userName = req.user?.name || '未知用户';
     const ipAddress = getClientIp(req);
 
-    await run(
+    const result = await run(
       'INSERT INTO operation_logs (user_id, user_name, resource_type, resource_id, action, summary, ip_address) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [userId, userName, resourceType, resourceId, action, summary, ipAddress]
     );
+
+    if (snapshotId) {
+      await run(
+        'UPDATE audit_snapshots SET operation_log_id = ? WHERE id = ?',
+        [result.id, snapshotId]
+      );
+    }
+
+    return result.id;
   } catch (err) {
     console.error('操作日志记录失败:', err);
+    return null;
   }
 };
 

@@ -314,7 +314,7 @@ router.post('/:id/approve', authenticate, authorize('admin'), idParamValidation,
     const fieldNameMap = getFieldNameMap(request.resource_type);
     const restoredFieldNames = rollbackResult.restoredFields?.map(f => fieldNameMap[f.field] || f.field).join(', ') || '';
     const summary = `审批通过并执行回滚，恢复字段: ${restoredFieldNames}`;
-    await logOperation(req, request.resource_type, request.resource_id, 'update', summary);
+    await logOperation(req, request.resource_type, request.resource_id, 'update', summary, rollbackResult.rollbackSnapshotId);
 
     success(res, { restored_fields: rollbackResult.restoredFields }, '审批通过，回滚执行成功');
   } catch (err) {
@@ -439,7 +439,7 @@ router.post('/:id/execute', authenticate, authorize('admin'), idParamValidation,
     const fieldNameMap = getFieldNameMap(request.resource_type);
     const restoredFieldNames = rollbackResult.restoredFields?.map(f => fieldNameMap[f.field] || f.field).join(', ') || '';
     const summary = `执行回滚，恢复字段: ${restoredFieldNames}`;
-    await logOperation(req, request.resource_type, request.resource_id, 'update', summary);
+    await logOperation(req, request.resource_type, request.resource_id, 'update', summary, rollbackResult.rollbackSnapshotId);
 
     success(res, { restored_fields: rollbackResult.restoredFields }, '回滚执行成功');
   } catch (err) {

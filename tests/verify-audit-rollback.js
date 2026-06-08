@@ -15,6 +15,7 @@ const {
 } = require('../utils/audit');
 
 const { run, get, runInTransaction } = require('../utils/dbHelper');
+const { logOperation, RESOURCE_TYPES, ACTIONS } = require('../utils/operationLog');
 
 let testContactId = null;
 let testSnapshotId = null;
@@ -122,6 +123,28 @@ async function runTests() {
         throw new Error('字段变化不正确');
       }
       testSnapshotId = result.snapshotId;
+
+      await logOperation(
+        mockReq,
+        RESOURCE_TYPES.CONTACT,
+        testContactId,
+        ACTIONS.UPDATE,
+        '测试联系人字段更新',
+        testSnapshotId
+      );
+      await run('UPDATE contacts SET phone = ? WHERE id = ?', ['13900139000', testContactId]);
+    }),
+
+    test('审计快照关联操作日志', async () => {
+      const snapshot = await get('SELECT operation_log_id FROM audit_snapshots WHERE id = ?', [testSnapshotId]);
+      if (!snapshot || !snapshot.operation_log_id) {
+        throw new Error('审计快照未关联操作日志');
+      }
+
+      const operationLog = await get('SELECT id, summary FROM operation_logs WHERE id = ?', [snapshot.operation_log_id]);
+      if (!operationLog || operationLog.summary !== '测试联系人字段更新') {
+        throw new Error('操作日志关联内容不正确');
+      }
     }),
 
     test('获取快照及其变更', async () => {
@@ -150,8 +173,7 @@ async function runTests() {
     test('冲突检测（无冲突）', async () => {
       const conflicts = await detectConflicts(testSnapshotId, ['phone']);
       if (conflicts.has_conflict) {
-        // 数据可能被后续修改了，这里不视为错误，因为数据库中可能还有其他数据
-        console.log(`   ⚠️  检测到冲突: ${JSON.stringify(conflicts.conflicts)}`);
+        throw new Error(`不应检测到冲突: ${JSON.stringify(conflicts.conflicts)}`);
       }
     }),
 
@@ -173,6 +195,10 @@ async function runTests() {
         if (!result.restoredFields || result.restoredFields.length === 0) {
           throw new Error('回滚成功但没有恢复任何字段');
         }
+        const contact = await get('SELECT phone FROM contacts WHERE id = ?', [testContactId]);
+        if (!contact || contact.phone !== '13800138000') {
+          throw new Error(`手机号回滚值不正确: ${contact?.phone}`);
+        }
         console.log(`   ℹ️  恢复的字段: ${result.restoredFields.map(f => f.field).join(', ')}`);
       }
     }),
@@ -180,6 +206,7 @@ async function runTests() {
     test('清理测试数据', async () => {
       await run('DELETE FROM audit_field_changes WHERE snapshot_id IN (SELECT id FROM audit_snapshots WHERE resource_id = ? AND resource_type = ?)', [testContactId, 'contact']);
       await run('DELETE FROM audit_snapshots WHERE resource_id = ? AND resource_type = ?', [testContactId, 'contact']);
+      await run('DELETE FROM operation_logs WHERE resource_id = ? AND resource_type = ?', [testContactId, 'contact']);
       await run('DELETE FROM contacts WHERE id = ?', [testContactId]);
     })
   ];
