@@ -3,9 +3,9 @@ const moment = require('moment');
 const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
-const { appointmentCreateValidation, idParamValidation } = require('../middleware/validator');
+const { appointmentCreateValidation, appointmentUpdateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
-const { checkCapacity, linkAppointmentToSlot, unlinkAppointmentFromSlot, findMatchingTimeSlot } = require('../utils/festivalHelper');
+const { checkCapacity, linkAppointmentToSlot, unlinkAppointmentFromSlot, findMatchingTimeSlot, getTimeSlotById, linkAppointmentToSlotById, getSlotOccupancy } = require('../utils/festivalHelper');
 const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit');
 
 const router = express.Router();
@@ -189,7 +189,7 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
 
 router.post('/', authenticate, appointmentCreateValidation, async (req, res) => {
   try {
-    const { contact_id, plot_id, appointment_date, appointment_time, number_of_people, vehicle_number, remark } = req.body;
+    const { contact_id, plot_id, appointment_date, appointment_time, number_of_people, vehicle_number, remark, festival_time_slot_id } = req.body;
     
     if (contact_id) {
       const contact = await get('SELECT id FROM contacts WHERE id = ?', [contact_id]);
@@ -204,10 +204,48 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
         return error(res, '墓位不存在', 400);
       }
     }
-    
-    const capacityCheck = await checkCapacity(appointment_date, appointment_time, number_of_people || 1);
-    if (capacityCheck.hasSlot && !capacityCheck.isAvailable) {
-      return error(res, `该时段预约已满，剩余容量: ${capacityCheck.remaining}，总容量: ${capacityCheck.capacity}`, 400);
+
+    let capacityCheck = null;
+    let explicitSlot = null;
+
+    if (festival_time_slot_id) {
+      explicitSlot = await getTimeSlotById(festival_time_slot_id);
+      if (!explicitSlot) {
+        return error(res, '指定的节日时段不存在或未启用', 400);
+      }
+
+      if (explicitSlot.date !== appointment_date) {
+        return error(res, `预约日期与时段日期不匹配，时段日期为 ${explicitSlot.date}`, 400);
+      }
+
+      if (appointment_time) {
+        if (appointment_time < explicitSlot.start_time || appointment_time >= explicitSlot.end_time) {
+          return error(res, `预约时间不在时段范围内，时段为 ${explicitSlot.start_time}-${explicitSlot.end_time}`, 400);
+        }
+      }
+
+      const occupancy = await getSlotOccupancy(explicitSlot.id, explicitSlot.date, explicitSlot.start_time, explicitSlot.end_time);
+      const remaining = explicitSlot.capacity - occupancy.total_people;
+      const people = number_of_people || 1;
+
+      if (remaining < people) {
+        return error(res, `该时段预约已满，剩余容量: ${remaining}，总容量: ${explicitSlot.capacity}`, 400);
+      }
+
+      capacityCheck = {
+        hasSlot: true,
+        isAvailable: true,
+        capacity: explicitSlot.capacity,
+        booked: occupancy.total_people,
+        remaining: remaining,
+        slot: explicitSlot,
+        autoAssignedTime: !appointment_time ? explicitSlot.start_time : null
+      };
+    } else {
+      capacityCheck = await checkCapacity(appointment_date, appointment_time, number_of_people || 1);
+      if (capacityCheck.hasSlot && !capacityCheck.isAvailable) {
+        return error(res, `该时段预约已满，剩余容量: ${capacityCheck.remaining}，总容量: ${capacityCheck.capacity}`, 400);
+      }
     }
     
     const existingCount = await get(`
@@ -222,11 +260,16 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
     
     const result = await run(
       'INSERT INTO appointments (contact_id, plot_id, appointment_date, appointment_time, number_of_people, vehicle_number, remark) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [contact_id, plot_id, appointment_date, appointment_time, number_of_people || 1, vehicle_number, remark]
+      [contact_id, plot_id, appointment_date, appointment_time || (capacityCheck.autoAssignedTime || null), number_of_people || 1, vehicle_number, remark]
     );
 
     let linkResult = null;
-    if (capacityCheck.hasSlot) {
+    if (explicitSlot) {
+      linkResult = await linkAppointmentToSlotById(result.id, festival_time_slot_id);
+      if (capacityCheck.autoAssignedTime) {
+        await run('UPDATE appointments SET appointment_time = ? WHERE id = ?', [capacityCheck.autoAssignedTime, result.id]);
+      }
+    } else if (capacityCheck.hasSlot) {
       linkResult = await linkAppointmentToSlot(result.id, appointment_date, appointment_time);
     }
 
@@ -239,12 +282,13 @@ router.post('/', authenticate, appointmentCreateValidation, async (req, res) => 
         has_slot: true,
         capacity: capacityCheck.capacity,
         booked: capacityCheck.booked + (number_of_people || 1),
-        remaining: capacityCheck.remaining - (number_of_people || 1)
+        remaining: capacityCheck.remaining - (number_of_people || 1),
+        time_slot_id: explicitSlot ? explicitSlot.id : (capacityCheck.slot ? capacityCheck.slot.id : null)
       } : { has_slot: false }
     };
 
-    if (linkResult && linkResult.autoAssignedTime) {
-      responseData.auto_assigned_time = linkResult.autoAssignedTime;
+    if (linkResult && (linkResult.autoAssignedTime || capacityCheck.autoAssignedTime)) {
+      responseData.auto_assigned_time = linkResult.autoAssignedTime || capacityCheck.autoAssignedTime;
     }
 
     success(res, responseData, '预约创建成功');
@@ -365,10 +409,10 @@ router.post('/:id/cancel', authenticate, idParamValidation, async (req, res) => 
   }
 });
 
-router.put('/:id', authenticate, idParamValidation, async (req, res) => {
+router.put('/:id', authenticate, idParamValidation, appointmentUpdateValidation, async (req, res) => {
   try {
     const { id } = req.params;
-    const { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark } = req.body;
+    const { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark, festival_time_slot_id } = req.body;
     
     const existing = await get('SELECT * FROM appointments WHERE id = ?', [id]);
     if (!existing) {
@@ -399,9 +443,62 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
                               (appointment_time !== undefined && appointment_time !== existing.appointment_time);
     const peopleChanged = number_of_people !== undefined && number_of_people !== existing.number_of_people;
     const statusChanged = status !== undefined && status !== existing.status;
+    const slotIdChanged = festival_time_slot_id !== undefined;
     let autoAssigned = false;
 
-    if (dateOrTimeChanged || peopleChanged) {
+    const getCurrentSlotForAppointment = async (apptId) => {
+      const link = await get(`
+        SELECT time_slot_id FROM festival_appointment_slots WHERE appointment_id = ?
+      `, [apptId]);
+      if (link) {
+        return await getTimeSlotById(link.time_slot_id);
+      }
+      return null;
+    };
+
+    if (festival_time_slot_id !== undefined) {
+      if (festival_time_slot_id === null || festival_time_slot_id === 0) {
+        await unlinkAppointmentFromSlot(id);
+      } else {
+        const explicitSlot = await getTimeSlotById(festival_time_slot_id);
+        if (!explicitSlot) {
+          return error(res, '指定的节日时段不存在或未启用', 400);
+        }
+
+        if (explicitSlot.date !== newDate) {
+          return error(res, `预约日期与时段日期不匹配，时段日期为 ${explicitSlot.date}`, 400);
+        }
+
+        if (newTime) {
+          if (newTime < explicitSlot.start_time || newTime >= explicitSlot.end_time) {
+            return error(res, `预约时间不在时段范围内，时段为 ${explicitSlot.start_time}-${explicitSlot.end_time}`, 400);
+          }
+        }
+
+        if (['待确认', '已确认'].includes(newStatus)) {
+          const currentOccupancy = await getSlotOccupancy(explicitSlot.id, explicitSlot.date, explicitSlot.start_time, explicitSlot.end_time);
+          
+          let bookedCount = currentOccupancy.total_people;
+          const currentSlot = await getCurrentSlotForAppointment(id);
+          if (currentSlot && currentSlot.id === explicitSlot.id) {
+            bookedCount -= existing.number_of_people;
+          }
+          
+          const remaining = explicitSlot.capacity - bookedCount;
+          if (newNumberOfPeople > remaining) {
+            return error(res, `该时段容量不足，剩余容量: ${remaining}，需要: ${newNumberOfPeople}`, 400);
+          }
+        }
+
+        if (['待确认', '已确认'].includes(newStatus)) {
+          const linkResult = await linkAppointmentToSlotById(id, festival_time_slot_id);
+          if (!newTime || timeExplicitlyCleared) {
+            await run('UPDATE appointments SET appointment_time = ? WHERE id = ?', [explicitSlot.start_time, id]);
+            autoAssigned = true;
+          }
+        }
+      }
+    } else if (dateOrTimeChanged || peopleChanged) {
       const oldSlot = await findMatchingTimeSlot(existing.appointment_date, existing.appointment_time);
       const newSlot = await findMatchingTimeSlot(newDate, newTime);
 
@@ -410,7 +507,6 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       }
 
       if (newSlot && ['待确认', '已确认'].includes(newStatus)) {
-        const { getSlotOccupancy } = require('../utils/festivalHelper');
         const currentOccupancy = await getSlotOccupancy(newSlot.id, newSlot.date, newSlot.start_time, newSlot.end_time);
         
         let bookedCount = currentOccupancy.total_people;
@@ -441,7 +537,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       await unlinkAppointmentFromSlot(id);
     }
 
-    if (statusChanged && ['已完成', '已取消'].includes(existing.status) && ['待确认', '已确认'].includes(newStatus)) {
+    if (statusChanged && ['已完成', '已取消'].includes(existing.status) && ['待确认', '已确认'].includes(newStatus) && !slotIdChanged) {
       const slot = await findMatchingTimeSlot(newDate, newTime);
       if (slot) {
         const capacityCheck = await checkCapacity(newDate, newTime, newNumberOfPeople);
@@ -501,7 +597,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       await run(`UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`, updateParams);
     }
 
-    const newData = { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark };
+    const newData = { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark, festival_time_slot_id };
     let action = ACTIONS.UPDATE;
     let summary;
 

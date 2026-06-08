@@ -50,6 +50,12 @@ const paymentCreateValidation = [
 
 const appointmentCreateValidation = [
   body('appointment_date').notEmpty().withMessage('预约日期不能为空'),
+  body('festival_time_slot_id').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('节日时段ID无效'),
+  validate
+];
+
+const appointmentUpdateValidation = [
+  body('festival_time_slot_id').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('节日时段ID无效'),
   validate
 ];
 
@@ -394,6 +400,7 @@ module.exports = {
   contactCreateValidation,
   paymentCreateValidation,
   appointmentCreateValidation,
+  appointmentUpdateValidation,
   visitRecordCreateValidation,
   serviceItemCreateValidation,
   serviceOrderCreateValidation,

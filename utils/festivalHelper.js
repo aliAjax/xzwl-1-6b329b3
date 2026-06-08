@@ -47,6 +47,21 @@ const findMatchingTimeSlot = async (date, time) => {
   return bestSlot;
 };
 
+const getTimeSlotById = async (slotId) => {
+  const slot = await get(`
+    SELECT fts.*,
+           fs.status as festival_status,
+           fs.festival_name,
+           fs.festival_type
+    FROM festival_time_slots fts
+    INNER JOIN festival_schedules fs ON fts.festival_schedule_id = fs.id
+    WHERE fs.status = 'active'
+      AND fts.id = ?
+  `, [slotId]);
+
+  return slot || null;
+};
+
 const hasFestivalSlotsOnDate = async (date) => {
   const count = await get(`
     SELECT COUNT(*) as count
@@ -165,11 +180,41 @@ const unlinkAppointmentFromSlot = async (appointmentId) => {
   return result.changes > 0;
 };
 
+const linkAppointmentToSlotById = async (appointmentId, slotId) => {
+  const slot = await getTimeSlotById(slotId);
+  
+  if (!slot) {
+    return null;
+  }
+
+  const existingLink = await get(`
+    SELECT id FROM festival_appointment_slots 
+    WHERE appointment_id = ?
+  `, [appointmentId]);
+
+  if (existingLink) {
+    await run('DELETE FROM festival_appointment_slots WHERE appointment_id = ?', [appointmentId]);
+  }
+
+  const result = await run(
+    'INSERT INTO festival_appointment_slots (appointment_id, time_slot_id) VALUES (?, ?)',
+    [appointmentId, slotId]
+  );
+
+  return {
+    linkId: result.id,
+    slotId: slotId,
+    slot: slot
+  };
+};
+
 module.exports = {
   findMatchingTimeSlot,
+  getTimeSlotById,
   getSlotOccupancy,
   checkCapacity,
   linkAppointmentToSlot,
+  linkAppointmentToSlotById,
   unlinkAppointmentFromSlot,
   hasFestivalSlotsOnDate
 };
