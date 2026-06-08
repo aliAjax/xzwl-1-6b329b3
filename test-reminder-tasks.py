@@ -157,7 +157,27 @@ def test_generate_first_batch(token, test_data):
     print('✓ 首次批次生成成功')
     return data['data']['batch_id']
 
-def test_generate_duplicate_batch(token):
+def mark_normal_details_as_sent(token, batch_id):
+    print(f'\n=== 将批次{batch_id}的正常明细标记为 sent ===')
+    response = requests.get(f'{BASE_URL}/reminders/batches/{batch_id}', headers=headers(token))
+    data = response.json()
+    normal_details = data['data']['normal_details']
+    
+    marked_count = 0
+    for detail in normal_details:
+        if detail['status'] == 'pending':
+            update_resp = requests.patch(
+                f'{BASE_URL}/reminders/details/{detail["id"]}/status',
+                headers=headers(token),
+                json={'status': 'sent'}
+            )
+            if update_resp.status_code == 200:
+                marked_count += 1
+    
+    print(f'✓ 已将 {marked_count} 条正常明细标记为 sent')
+    return marked_count
+
+def test_generate_duplicate_batch(token, expected_skip=0):
     print('\n=== 测试2: 重复生成提醒批次（验证去重） ===')
     response = requests.post(f'{BASE_URL}/reminders/generate', headers=headers(token), json={
         'reminder_days': 30,
@@ -180,8 +200,12 @@ def test_generate_duplicate_batch(token):
     print(f'异常: {exception}')
     
     assert total >= 4, f'预期至少4条记录，实际{total}'
-    assert success == 0, f'重复生成成功数应为0，实际{success}'
-    assert skip >= 2, f'预期至少2条跳过（正常+重复测试），实际{skip}'
+    if expected_skip > 0:
+        assert success == 0, f'重复生成成功数应为0，实际{success}'
+        assert skip == expected_skip, f'预期跳过{expected_skip}条，实际{skip}'
+    else:
+        assert success >= 2, f'无sent记录时成功数应>=2，实际{success}'
+        assert skip == 0, f'无sent记录时跳过数应为0，实际{skip}'
     assert exception >= 2, f'预期至少2条异常（无联系人+异常手机号），实际{exception}'
     
     print('✓ 重复生成去重机制生效')
@@ -498,13 +522,22 @@ def test_ignored_not_duplicate(token, test_data):
     try:
         cursor.execute("""
             UPDATE reminder_details 
-            SET status = 'ignored', sent_at = datetime('now')
+            SET status = 'pending', sent_at = NULL, operator_id = NULL, operator_name = NULL, failure_reason = NULL
             WHERE payment_id IN (
                 SELECT id FROM payments WHERE plot_id = ?
             )
         """, (test_data['plot_dup_test'],))
         conn.commit()
-        print('✓ 已将测试记录标记为 ignored')
+        
+        cursor.execute("""
+            UPDATE reminder_details 
+            SET status = 'ignored', sent_at = datetime('now')
+            WHERE payment_id IN (
+                SELECT id FROM payments WHERE plot_id = ?
+            ) AND status = 'pending'
+        """, (test_data['plot_dup_test'],))
+        conn.commit()
+        print('✓ 已将测试记录重置并标记为 ignored')
     finally:
         conn.close()
     
@@ -534,7 +567,8 @@ def main():
     
     try:
         batch_id1 = test_generate_first_batch(token, test_data)
-        batch_id2 = test_generate_duplicate_batch(token)
+        sent_count = mark_normal_details_as_sent(token, batch_id1)
+        batch_id2 = test_generate_duplicate_batch(token, expected_skip=sent_count)
         first_batch_id = test_get_batches(token)
         test_get_batch_detail(token, first_batch_id)
         test_get_exceptions(token)

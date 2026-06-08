@@ -128,10 +128,10 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
     }
 
     const nullBillYearRecords = await all(`
-      SELECT id, start_date, due_date FROM payments 
+      SELECT id, start_date, due_date FROM payments
       WHERE bill_year IS NULL AND (start_date IS NOT NULL OR due_date IS NOT NULL)
     `);
-    
+
     if (nullBillYearRecords.length > 0) {
       let updatedCount = 0;
       for (const record of nullBillYearRecords) {
@@ -141,7 +141,7 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
         } else if (record.due_date) {
           billYear = moment(record.due_date).year();
         }
-        
+
         if (billYear) {
           await run('UPDATE payments SET bill_year = ? WHERE id = ?', [billYear, record.id]);
           updatedCount++;
@@ -403,36 +403,36 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
 
     if (existingDeceasedWithPlot.length > 0) {
       log(`发现 ${existingDeceasedWithPlot.length} 条历史逝者占用墓位数据，正在创建兼容合同...`);
-      
+
       let createdCount = 0;
       let linkedPaymentCount = 0;
       for (const item of existingDeceasedWithPlot) {
         try {
           const existingContract = await get(`
-            SELECT id FROM contracts 
+            SELECT id FROM contracts
             WHERE plot_id = ? AND deceased_id = ? AND status = 'effective'
           `, [item.plot_id, item.deceased_id]);
-          
+
           if (existingContract) {
             continue;
           }
-          
+
           const contractNo = `HTLS${moment(item.deceased_created_at || moment()).format('YYYYMMDD')}${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
           const plotPrice = item.plot_price || 0;
-          
+
           const existingPayments = await all(`
             SELECT id, amount, fee_category, status, payment_date
-            FROM payments 
-            WHERE plot_id = ? 
+            FROM payments
+            WHERE plot_id = ?
               AND contract_id IS NULL
               AND status = '已缴'
             ORDER BY payment_date ASC
           `, [item.plot_id]);
-          
+
           let totalPaid = 0;
           let plotPayment = 0;
           let feePayment = 0;
-          
+
           for (const payment of existingPayments) {
             const category = payment.fee_category || '管理费';
             if (category === '购墓款') {
@@ -442,10 +442,10 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
             }
             totalPaid += payment.amount;
           }
-          
+
           const finalPlotPrice = Math.max(plotPrice, plotPayment);
           const totalAmount = finalPlotPrice + feePayment;
-          
+
           const contractResult = await run(`
             INSERT INTO contracts (
               contract_no, plot_id, contact_id, deceased_id, status,
@@ -461,42 +461,42 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
             '历史数据兼容-自动生成合同', 1, '系统',
             item.deceased_created_at, item.deceased_created_at
           ]);
-          
+
           if (finalPlotPrice > 0) {
             await run(`
               INSERT INTO contract_fee_items (contract_id, fee_type, fee_category, amount, description)
               VALUES (?, '墓位款', '购墓款', ?, '历史墓位购买费用')
             `, [contractResult.id, finalPlotPrice]);
           }
-          
+
           if (feePayment > 0) {
             await run(`
               INSERT INTO contract_fee_items (contract_id, fee_type, fee_category, amount, quantity, unit_price, description)
               VALUES (?, '管理费', '管理费', ?, ?, ?, '历史管理费')
             `, [contractResult.id, feePayment, feePayment > 0 ? Math.ceil(feePayment / 100) : 1, feePayment > 0 ? 100 : 0]);
           }
-          
+
           for (const payment of existingPayments) {
             await run('UPDATE payments SET contract_id = ? WHERE id = ?', [contractResult.id, payment.id]);
             linkedPaymentCount++;
           }
-          
+
           await run(`
             INSERT INTO contract_status_logs (contract_id, from_status, to_status, operator_id, operator_name, remark, created_at)
             VALUES (?, 'draft', 'effective', ?, '系统', ?, ?)
           `, [contractResult.id, 1, `历史数据兼容-直接生效，已关联${existingPayments.length}条历史付款记录`, item.deceased_created_at]);
-          
+
           createdCount++;
         } catch (e) {
           log(`创建兼容合同时出错（逝者ID: ${item.deceased_id}）:`, e.message);
         }
       }
-      
+
       log(`已为 ${createdCount} 条历史数据创建兼容合同，关联 ${linkedPaymentCount} 条历史付款记录`);
     } else {
       log('无需要处理的历史逝者占用墓位数据');
     }
-    
+
     const unlinkedEffectiveContracts = await all(`
       SELECT c.id, c.plot_id, c.paid_amount, c.total_amount
       FROM contracts c
@@ -504,45 +504,45 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
         AND c.paid_amount = 0
         AND c.id NOT IN (SELECT DISTINCT contract_id FROM payments WHERE contract_id IS NOT NULL)
     `);
-    
+
     if (unlinkedEffectiveContracts.length > 0) {
       log(`发现 ${unlinkedEffectiveContracts.length} 个已生效合同没有关联付款记录，正在检查历史付款...`);
-      
+
       let updatedCount = 0;
       for (const contract of unlinkedEffectiveContracts) {
         try {
           const existingPayments = await all(`
             SELECT id, amount, fee_category, status
-            FROM payments 
-            WHERE plot_id = ? 
+            FROM payments
+            WHERE plot_id = ?
               AND contract_id IS NULL
               AND status = '已缴'
             ORDER BY payment_date ASC
           `, [contract.plot_id]);
-          
+
           if (existingPayments.length > 0) {
             let totalPaid = 0;
             for (const payment of existingPayments) {
               await run('UPDATE payments SET contract_id = ? WHERE id = ?', [contract.id, payment.id]);
               totalPaid += payment.amount;
             }
-            
+
             if (totalPaid > 0) {
               await run(`
-                UPDATE contracts SET 
+                UPDATE contracts SET
                   paid_amount = ?,
                   updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
               `, [totalPaid, contract.id]);
             }
-            
+
             updatedCount++;
           }
         } catch (e) {
           log(`关联付款记录时出错（合同ID: ${contract.id}）:`, e.message);
         }
       }
-      
+
       log(`已为 ${updatedCount} 个合同关联历史付款记录`);
     }
 

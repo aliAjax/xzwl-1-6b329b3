@@ -434,11 +434,11 @@ router.patch('/details/:id/status', authenticate, idParamValidation, reminderDet
     const now = moment().format('YYYY-MM-DD HH:mm:ss');
 
     await run(
-      `UPDATE reminder_details SET 
-        status = ?, 
-        sent_at = ?, 
-        operator_id = ?, 
-        operator_name = ?, 
+      `UPDATE reminder_details SET
+        status = ?,
+        sent_at = ?,
+        operator_id = ?,
+        operator_name = ?,
         failure_reason = ?
       WHERE id = ?`,
       [
@@ -492,7 +492,7 @@ router.get('/statistics', authenticate, async (req, res) => {
     `, [last30Days]);
 
     const batchStats = await get(`
-      SELECT 
+      SELECT
         COUNT(*) as total_batches,
         SUM(total_count) as total_records,
         SUM(success_count) as total_success,
