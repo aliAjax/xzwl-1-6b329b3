@@ -10,9 +10,9 @@ const { checkAndReleaseExpiredReservations } = require('./contracts');
 
 const router = express.Router();
 
-const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null, autoReleaseExpired = true, operatorId = null, operatorName = '系统', ipAddress = '') => {
+const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null, autoReleaseExpired = true, operatorId = null, operatorName = '系统', ipAddress = '', releaseInTransaction = true) => {
   if (autoReleaseExpired) {
-    await checkAndReleaseExpiredReservations(plotId, operatorId, operatorName, ipAddress);
+    await checkAndReleaseExpiredReservations(plotId, operatorId, operatorName, ipAddress, releaseInTransaction);
   }
 
   const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
@@ -158,7 +158,7 @@ router.post('/', authenticate, deceasedCreateValidation, async (req, res) => {
       let deceasedId;
       
       if (plot_id) {
-        const availability = await checkPlotAvailabilityForDeceased(plot_id, null, true, operatorId, operatorName, ipAddress);
+        const availability = await checkPlotAvailabilityForDeceased(plot_id, null, true, operatorId, operatorName, ipAddress, false);
         if (!availability.available) {
           throw new Error(availability.reason);
         }
@@ -224,7 +224,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     await runInTransaction(async () => {
       if (plot_id !== undefined && plot_id !== existing.plot_id) {
         if (plot_id !== null) {
-          const availability = await checkPlotAvailabilityForDeceased(plot_id, id, true, operatorId, operatorName, ipAddress);
+          const availability = await checkPlotAvailabilityForDeceased(plot_id, id, true, operatorId, operatorName, ipAddress, false);
           if (!availability.available) {
             throw new Error(availability.reason);
           }

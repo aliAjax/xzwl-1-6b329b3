@@ -46,9 +46,9 @@ const generateContractNo = () => {
   return `HT${date}${random}`;
 };
 
-const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true, operatorId = null, operatorName = '系统', ipAddress = '') => {
+const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true, operatorId = null, operatorName = '系统', ipAddress = '', releaseInTransaction = true) => {
   if (autoReleaseExpired) {
-    await checkAndReleaseExpiredReservations(plotId, operatorId, operatorName, ipAddress);
+    await checkAndReleaseExpiredReservations(plotId, operatorId, operatorName, ipAddress, releaseInTransaction);
   }
 
   const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
@@ -161,10 +161,10 @@ const releasePlotReservation = async (plotId, contractId) => {
   );
 };
 
-const checkAndReleaseExpiredReservations = async (plotId, operatorId = null, operatorName = '系统', ipAddress = '') => {
+const checkAndReleaseExpiredReservations = async (plotId, operatorId = null, operatorName = '系统', ipAddress = '', releaseInTransaction = true) => {
   const now = moment().format('YYYY-MM-DD HH:mm:ss');
   const expired = await all(`
-    SELECT 
+    SELECT
       r.id as reservation_id,
       r.contract_id,
       r.plot_id,
@@ -187,7 +187,7 @@ const checkAndReleaseExpiredReservations = async (plotId, operatorId = null, ope
       contract_no: r.contract_no,
       plot_number: r.plot_number
     };
-    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress);
+    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress, releaseInTransaction);
   }
 };
 
@@ -246,7 +246,7 @@ const validateReservationForRelease = async (reservation) => {
   return { valid: true, contract, plot };
 };
 
-const releaseSingleExpiredReservation = async (reservation, operatorId, operatorName, ipAddress = '') => {
+const releaseSingleExpiredReservation = async (reservation, operatorId, operatorName, ipAddress = '', useTransaction = true) => {
   const validation = await validateReservationForRelease(reservation);
   
   if (!validation.valid) {
@@ -264,7 +264,7 @@ const releaseSingleExpiredReservation = async (reservation, operatorId, operator
   const { contract, plot } = validation;
   
   try {
-    await runInTransaction(async () => {
+    const releaseOperations = async () => {
       await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [reservation.id]);
       
       await run(
@@ -312,7 +312,13 @@ const releaseSingleExpiredReservation = async (reservation, operatorId, operator
         operatorName,
         ipAddress
       );
-    });
+    };
+
+    if (useTransaction) {
+      await runInTransaction(releaseOperations);
+    } else {
+      await releaseOperations();
+    }
     
     return {
       success: true,
@@ -401,7 +407,7 @@ const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = nu
       return { available: false, reason: '墓位不存在' };
     }
     
-    const availability = await checkPlotAvailability(plotId, excludeContractId, excludeDeceasedId, autoReleaseExpired, operatorId, operatorName, ipAddress);
+    const availability = await checkPlotAvailability(plotId, excludeContractId, excludeDeceasedId, autoReleaseExpired, operatorId, operatorName, ipAddress, false);
     return { ...availability, _locked: true };
   } catch (err) {
     await run('ROLLBACK');
@@ -534,10 +540,10 @@ router.post('/release-expired-reservation/:id', authenticate, idParamValidation,
   }
 });
 
-const autoReleaseExpiredReservations = async (operatorId = null, operatorName = '系统', ipAddress = '') => {
+const autoReleaseExpiredReservations = async (operatorId = null, operatorName = '系统', ipAddress = '', releaseInTransaction = true) => {
   const now = moment().format('YYYY-MM-DD HH:mm:ss');
   const expired = await all(`
-    SELECT 
+    SELECT
       r.id as reservation_id,
       r.contract_id,
       r.plot_id,
@@ -559,7 +565,7 @@ const autoReleaseExpiredReservations = async (operatorId = null, operatorName = 
       contract_no: r.contract_no,
       plot_number: r.plot_number
     };
-    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress);
+    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress, releaseInTransaction);
   }
 };
 
@@ -975,7 +981,7 @@ router.post('/reserve', authenticate, contractReserveValidation, async (req, res
     await checkAndReleaseExpiredReservations(plot_id, operatorId, operatorName, ipAddress);
 
     const result = await runInTransaction(async () => {
-      const lockCheck = await checkPlotAvailability(plot_id, null, null, true, operatorId, operatorName, ipAddress);
+      const lockCheck = await checkPlotAvailability(plot_id, null, null, true, operatorId, operatorName, ipAddress, false);
       if (!lockCheck.available) {
         throw new Error(lockCheck.reason);
       }
@@ -1124,7 +1130,7 @@ router.post('/:id/sign', authenticate, idParamValidation, contractSignValidation
     }
 
     const result = await runInTransaction(async () => {
-      const availability = await checkPlotAvailability(existing.plot_id, id, deceased_id, true, operatorId, operatorName, ipAddress);
+      const availability = await checkPlotAvailability(existing.plot_id, id, deceased_id, true, operatorId, operatorName, ipAddress, false);
       if (!availability.available) {
         throw new Error(availability.reason);
       }
@@ -1270,7 +1276,7 @@ router.post('/:id/pay', authenticate, idParamValidation, contractPayValidation, 
       let becameEffective = false;
       let effectiveAt = null;
       if (newPaidAmount >= existing.total_amount && existing.status !== CONTRACT_STATUSES.EFFECTIVE) {
-        const finalCheck = await checkPlotAvailability(existing.plot_id, id, existing.deceased_id, true, operatorId, operatorName, ipAddress);
+        const finalCheck = await checkPlotAvailability(existing.plot_id, id, existing.deceased_id, true, operatorId, operatorName, ipAddress, false);
         if (!finalCheck.available) {
           throw new Error(`合同无法生效：${finalCheck.reason}`);
         }
