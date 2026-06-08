@@ -496,9 +496,10 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       updateParams.push(remark);
     }
 
-    updateParams.push(id);
-
-    await run(`UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`, updateParams);
+    if (updateFields.length > 0) {
+      updateParams.push(id);
+      await run(`UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`, updateParams);
+    }
 
     const newData = { contact_id, plot_id, appointment_date, appointment_time, number_of_people, status, vehicle_number, remark };
     let action = ACTIONS.UPDATE;
