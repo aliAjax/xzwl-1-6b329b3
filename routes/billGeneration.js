@@ -382,4 +382,98 @@ router.get('/batches/:id', authenticate, idParamValidation, async (req, res) => 
   }
 });
 
+router.get('/batches/:id/export', authenticate, idParamValidation, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const batch = await get('SELECT * FROM bill_batches WHERE id = ?', [id]);
+    if (!batch) {
+      return error(res, '批次不存在', 404);
+    }
+
+    const generatedBills = await all(`
+      SELECT py.*,
+             p.plot_number,
+             p.area,
+             c.name as contact_name,
+             c.phone as contact_phone,
+             d.name as deceased_name
+      FROM payments py
+      LEFT JOIN plots p ON py.plot_id = p.id
+      LEFT JOIN contacts c ON py.contact_id = c.id
+      LEFT JOIN deceased d ON p.id = d.plot_id
+      WHERE py.bill_batch_id = ?
+      ORDER BY py.id ASC
+    `, [id]);
+
+    const exceptions = await all(`
+      SELECT be.*,
+             p.area
+      FROM bill_batch_exceptions be
+      LEFT JOIN plots p ON be.plot_id = p.id
+      WHERE be.batch_id = ?
+      ORDER BY be.id ASC
+    `, [id]);
+
+    const exportList = [];
+    let index = 1;
+
+    for (const bill of generatedBills) {
+      exportList.push({
+        '序号': index++,
+        '墓位编号': bill.plot_number || '',
+        '区域': bill.area || '',
+        '联系人姓名': bill.contact_name || '',
+        '联系电话': bill.contact_phone || '',
+        '逝者姓名': bill.deceased_name || '',
+        '账单年度': bill.bill_year || '',
+        '起始日期': bill.start_date || '',
+        '截止日期': bill.due_date || '',
+        '应缴金额': bill.amount || 0,
+        '记录类型': '成功生成',
+        '跳过原因': '',
+        '异常原因': ''
+      });
+    }
+
+    for (const exc of exceptions) {
+      const isSkip = exc.error_type === ERROR_TYPES.DUPLICATE_BILL;
+      exportList.push({
+        '序号': index++,
+        '墓位编号': exc.plot_number || '',
+        '区域': exc.area || '',
+        '联系人姓名': '',
+        '联系电话': '',
+        '逝者姓名': '',
+        '账单年度': batch.bill_year || '',
+        '起始日期': '',
+        '截止日期': '',
+        '应缴金额': 0,
+        '记录类型': isSkip ? '跳过' : '异常',
+        '跳过原因': isSkip ? exc.error_message : '',
+        '异常原因': isSkip ? '' : exc.error_message
+      });
+    }
+
+    success(res, {
+      batch_info: {
+        batch_no: batch.batch_no,
+        bill_year: batch.bill_year,
+        fee_standard: batch.fee_standard,
+        total_count: batch.total_count,
+        success_count: batch.success_count,
+        skip_count: batch.skip_count,
+        error_count: batch.error_count,
+        status: batch.status,
+        operator_name: batch.operator_name,
+        remark: batch.remark,
+        created_at: batch.created_at
+      },
+      export_list: exportList
+    }, '批次明细导出成功');
+  } catch (err) {
+    error(res, err.message, 500);
+  }
+});
+
 module.exports = router;
