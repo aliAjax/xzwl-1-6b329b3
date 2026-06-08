@@ -11,7 +11,9 @@
     "migrate": "node scripts/migrate-db.js",
     "test": "node scripts/run-tests.js",
     "test:node": "node scripts/run-tests.js --node-only",
-    "test:python": "node scripts/run-tests.js --python-only"
+    "test:python": "node scripts/run-tests.js --python-only",
+    "test:debug": "node scripts/run-tests.js --verbose --no-cleanup",
+    "test:clean": "node -e \"const fs=require('fs');const path=require('path');const db=path.resolve(__dirname,'./data/test-cemetery.db');['','-shm','-wal','-journal'].forEach(s=>{const p=db+s;if(fs.existsSync(p)){fs.unlinkSync(p);console.log('Deleted:',p)}});const pid=path.resolve(__dirname,'./data/.test-server.pid');if(fs.existsSync(pid)){fs.unlinkSync(pid);console.log('Deleted:',pid)};console.log('Cleanup complete')\""
   },
   "dependencies": {
     "express": "^4.18.2",

@@ -1,6 +1,10 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
-require('dotenv').config();
+
+const envPath = process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env');
+if (require('fs').existsSync(envPath)) {
+  require('dotenv').config({ path: envPath });
+}
 
 const dbPath = path.resolve(process.cwd(), process.env.DB_PATH || './data/cemetery.db');
 
