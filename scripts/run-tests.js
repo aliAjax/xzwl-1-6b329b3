@@ -583,7 +583,8 @@ const runNodeTests = async (prepareTest, selectedFiles = []) => {
 
   const testFiles = [
     'tests/verify-audit-rollback.js',
-    'tests/verify-concurrency-boundary.js'
+    'tests/verify-concurrency-boundary.js',
+    'tests/verify-contract-service-refactor.js'
   ];
 
   const selectedTestFiles = filterTestFiles(testFiles, selectedFiles);
