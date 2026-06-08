@@ -303,10 +303,15 @@ const createTables = () => {
         is_exception INTEGER NOT NULL DEFAULT 0,
         exception_type TEXT,
         exception_message TEXT,
+        sent_at DATETIME,
+        operator_id INTEGER,
+        operator_name TEXT,
+        failure_reason TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (batch_id) REFERENCES reminder_batches(id),
         FOREIGN KEY (payment_id) REFERENCES payments(id),
-        FOREIGN KEY (plot_id) REFERENCES plots(id)
+        FOREIGN KEY (plot_id) REFERENCES plots(id),
+        FOREIGN KEY (operator_id) REFERENCES users(id)
       )`);
 
       db.run(`CREATE TABLE IF NOT EXISTS maintenance_orders (

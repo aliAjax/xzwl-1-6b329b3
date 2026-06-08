@@ -357,6 +357,169 @@ def test_exception_types(token):
     
     print('✓ 异常类型分类正确')
 
+def get_pending_reminder_id(token):
+    response = requests.get(f'{BASE_URL}/reminders/details', headers=headers(token), params={
+        'pageSize': 100,
+        'is_exception': '0'
+    })
+    data = response.json()
+    for detail in data['data']['list']:
+        if detail['status'] == 'pending':
+            return detail['id']
+    return None
+
+def test_update_status_to_sent(token):
+    print('\n=== 测试11: 更新提醒状态为 sent ===')
+    detail_id = get_pending_reminder_id(token)
+    assert detail_id is not None, '没有找到 pending 状态的提醒明细'
+    
+    response = requests.patch(f'{BASE_URL}/reminders/details/{detail_id}/status', 
+                             headers=headers(token), 
+                             json={'status': 'sent'})
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    print(f'响应: {json.dumps(data, ensure_ascii=False, indent=2)}')
+    
+    assert response.status_code == 200, f'预期200，实际{response.status_code}'
+    assert data['data']['status'] == 'sent'
+    assert data['data']['sent_at'] is not None
+    assert data['data']['operator_id'] is not None
+    assert data['data']['operator_name'] is not None
+    
+    print('✓ 状态更新为 sent 成功')
+    return detail_id
+
+def test_update_status_to_failed(token):
+    print('\n=== 测试12: 更新提醒状态为 failed ===')
+    detail_id = get_pending_reminder_id(token)
+    assert detail_id is not None, '没有找到 pending 状态的提醒明细'
+    
+    response = requests.patch(f'{BASE_URL}/reminders/details/{detail_id}/status', 
+                             headers=headers(token), 
+                             json={'status': 'failed', 'failure_reason': '短信网关异常'})
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    print(f'响应: {json.dumps(data, ensure_ascii=False, indent=2)}')
+    
+    assert response.status_code == 200, f'预期200，实际{response.status_code}'
+    assert data['data']['status'] == 'failed'
+    assert data['data']['failure_reason'] == '短信网关异常'
+    assert data['data']['sent_at'] is not None
+    
+    print('✓ 状态更新为 failed 成功')
+
+def test_update_status_to_ignored(token):
+    print('\n=== 测试13: 更新提醒状态为 ignored ===')
+    detail_id = get_pending_reminder_id(token)
+    assert detail_id is not None, '没有找到 pending 状态的提醒明细'
+    
+    response = requests.patch(f'{BASE_URL}/reminders/details/{detail_id}/status', 
+                             headers=headers(token), 
+                             json={'status': 'ignored'})
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    print(f'响应: {json.dumps(data, ensure_ascii=False, indent=2)}')
+    
+    assert response.status_code == 200, f'预期200，实际{response.status_code}'
+    assert data['data']['status'] == 'ignored'
+    assert data['data']['sent_at'] is not None
+    
+    print('✓ 状态更新为 ignored 成功')
+
+def test_update_status_invalid(token):
+    print('\n=== 测试14: 验证无效状态更新 ===')
+    detail_id = get_pending_reminder_id(token)
+    assert detail_id is not None, '没有找到 pending 状态的提醒明细'
+    
+    response = requests.patch(f'{BASE_URL}/reminders/details/{detail_id}/status', 
+                             headers=headers(token), 
+                             json={'status': 'invalid_status'})
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    print(f'响应: {json.dumps(data, ensure_ascii=False, indent=2)}')
+    
+    assert response.status_code == 400, f'预期400，实际{response.status_code}'
+    print('✓ 无效状态更新被正确拒绝')
+
+def test_update_status_failed_without_reason(token):
+    print('\n=== 测试15: 验证 failed 状态缺少失败原因 ===')
+    detail_id = get_pending_reminder_id(token)
+    assert detail_id is not None, '没有找到 pending 状态的提醒明细'
+    
+    response = requests.patch(f'{BASE_URL}/reminders/details/{detail_id}/status', 
+                             headers=headers(token), 
+                             json={'status': 'failed'})
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    print(f'响应: {json.dumps(data, ensure_ascii=False, indent=2)}')
+    
+    assert response.status_code == 400, f'预期400，实际{response.status_code}'
+    print('✓ failed 状态缺少失败原因被正确拒绝')
+
+def test_update_non_pending_status(token, sent_detail_id):
+    print('\n=== 测试16: 验证非 pending 状态无法更新 ===')
+    response = requests.patch(f'{BASE_URL}/reminders/details/{sent_detail_id}/status', 
+                             headers=headers(token), 
+                             json={'status': 'ignored'})
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    print(f'响应: {json.dumps(data, ensure_ascii=False, indent=2)}')
+    
+    assert response.status_code == 400, f'预期400，实际{response.status_code}'
+    assert '仅 pending 状态的记录可更新' in data['message']
+    print('✓ 非 pending 状态更新被正确拒绝')
+
+def test_batch_detail_with_status_summary(token, batch_id):
+    print(f'\n=== 测试17: 批次详情包含状态汇总 (batch_id={batch_id}) ===')
+    response = requests.get(f'{BASE_URL}/reminders/batches/{batch_id}', headers=headers(token))
+    data = response.json()
+    
+    assert response.status_code == 200
+    assert 'status_summary' in data['data']
+    
+    status_summary = data['data']['status_summary']
+    print(f'状态汇总: {json.dumps(status_summary, ensure_ascii=False)}')
+    
+    assert 'pending' in status_summary
+    assert 'sent' in status_summary
+    assert 'failed' in status_summary
+    assert 'ignored' in status_summary
+    
+    total = sum(status_summary.values())
+    batch = data['data']['batch']
+    assert total == batch['total_count'], f'状态汇总总数{total}应等于批次总数{batch["total_count"]}'
+    
+    print('✓ 批次详情状态汇总正确')
+
+def test_ignored_not_duplicate(token, test_data):
+    print('\n=== 测试18: 验证 ignored 记录不影响重复提醒判断 ===')
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            UPDATE reminder_details 
+            SET status = 'ignored', sent_at = datetime('now')
+            WHERE payment_id IN (
+                SELECT id FROM payments WHERE plot_id = ?
+            )
+        """, (test_data['plot_dup_test'],))
+        conn.commit()
+        print('✓ 已将测试记录标记为 ignored')
+    finally:
+        conn.close()
+    
+    response = requests.post(f'{BASE_URL}/reminders/generate', headers=headers(token), json={
+        'reminder_days': 30,
+        'remark': '测试ignored去重'
+    })
+    data = response.json()
+    
+    print(f'状态码: {response.status_code}')
+    print(f'成功数: {data["data"]["success_count"]}, 跳过数: {data["data"]["skip_count"]}')
+    
+    assert data['data']['success_count'] >= 1, 'ignored 记录不应阻止重新生成提醒'
+    print('✓ ignored 记录不影响重复提醒判断')
+
 def main():
     print('=' * 60)
     print('墓位续费提醒任务模块测试')
@@ -380,6 +543,15 @@ def main():
         test_search_by_phone(token)
         test_statistics(token)
         test_exception_types(token)
+        
+        sent_detail_id = test_update_status_to_sent(token)
+        test_update_status_to_failed(token)
+        test_update_status_to_ignored(token)
+        test_update_status_invalid(token)
+        test_update_status_failed_without_reason(token)
+        test_update_non_pending_status(token, sent_detail_id)
+        test_batch_detail_with_status_summary(token, first_batch_id)
+        test_ignored_not_duplicate(token, test_data)
         
         print('\n' + '=' * 60)
         print('✓ 所有测试通过！')

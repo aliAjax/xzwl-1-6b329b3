@@ -725,6 +725,59 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
     });
     log('rollback_approvals 表已就绪');
 
+    const hasSentAt = await checkColumn('reminder_details', 'sent_at');
+    const hasOperatorId = await checkColumn('reminder_details', 'operator_id');
+    const hasOperatorName = await checkColumn('reminder_details', 'operator_name');
+    const hasFailureReason = await checkColumn('reminder_details', 'failure_reason');
+
+    if (!hasSentAt) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE reminder_details ADD COLUMN sent_at DATETIME`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 reminder_details.sent_at 字段');
+    } else {
+      log('reminder_details.sent_at 字段已存在，跳过');
+    }
+
+    if (!hasOperatorId) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE reminder_details ADD COLUMN operator_id INTEGER`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 reminder_details.operator_id 字段');
+    } else {
+      log('reminder_details.operator_id 字段已存在，跳过');
+    }
+
+    if (!hasOperatorName) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE reminder_details ADD COLUMN operator_name TEXT`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 reminder_details.operator_name 字段');
+    } else {
+      log('reminder_details.operator_name 字段已存在，跳过');
+    }
+
+    if (!hasFailureReason) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE reminder_details ADD COLUMN failure_reason TEXT`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 reminder_details.failure_reason 字段');
+    } else {
+      log('reminder_details.failure_reason 字段已存在，跳过');
+    }
+
     log('');
     log('数据库迁移完成！');
     if (exitOnComplete) {

@@ -3,7 +3,7 @@ const moment = require('moment');
 const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
-const { reminderGenerateValidation, reminderBatchQueryValidation, reminderDetailQueryValidation, idParamValidation } = require('../middleware/validator');
+const { reminderGenerateValidation, reminderBatchQueryValidation, reminderDetailQueryValidation, reminderDetailStatusValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
@@ -73,6 +73,7 @@ const checkDuplicateReminder = async (paymentId) => {
     SELECT id FROM reminder_details
     WHERE payment_id = ?
       AND is_exception = 0
+      AND status = 'sent'
       AND created_at >= ?
     LIMIT 1
   `, [paymentId, skipDate]);
@@ -312,11 +313,31 @@ router.get('/batches/:id', authenticate, idParamValidation, async (req, res) => 
       GROUP BY exception_type
     `, [id]);
 
+    const statusStats = await all(`
+      SELECT status, COUNT(*) as count
+      FROM reminder_details
+      WHERE batch_id = ?
+      GROUP BY status
+    `, [id]);
+
+    const statusSummary = {
+      pending: 0,
+      sent: 0,
+      failed: 0,
+      ignored: 0
+    };
+    statusStats.forEach(stat => {
+      if (statusSummary.hasOwnProperty(stat.status)) {
+        statusSummary[stat.status] = stat.count;
+      }
+    });
+
     success(res, {
       batch,
       normal_details: normalDetails,
       exception_details: exceptionDetails,
-      exception_statistics: exceptionStats
+      exception_statistics: exceptionStats,
+      status_summary: statusSummary
     }, '批次详情查询成功');
   } catch (err) {
     error(res, err.message, 500);
@@ -391,6 +412,58 @@ router.get('/details', authenticate, reminderDetailQueryValidation, async (req, 
 
     const result = await paginateQuery(baseSql, params, page, pageSize, 'rd.created_at DESC');
     paginate(res, result.data, result.total, page, pageSize);
+  } catch (err) {
+    error(res, err.message, 500);
+  }
+});
+
+router.patch('/details/:id/status', authenticate, idParamValidation, reminderDetailStatusValidation, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, failure_reason } = req.body;
+
+    const detail = await get('SELECT * FROM reminder_details WHERE id = ?', [id]);
+    if (!detail) {
+      return error(res, '提醒明细不存在', 404);
+    }
+
+    if (detail.status !== 'pending') {
+      return error(res, `仅 pending 状态的记录可更新，当前状态为 ${detail.status}`, 400);
+    }
+
+    const now = moment().format('YYYY-MM-DD HH:mm:ss');
+
+    await run(
+      `UPDATE reminder_details SET 
+        status = ?, 
+        sent_at = ?, 
+        operator_id = ?, 
+        operator_name = ?, 
+        failure_reason = ?
+      WHERE id = ?`,
+      [
+        status,
+        now,
+        req.user.id,
+        req.user.name,
+        status === 'failed' ? failure_reason : null,
+        id
+      ]
+    );
+
+    const updatedDetail = await get('SELECT * FROM reminder_details WHERE id = ?', [id]);
+
+    const summary = generateSummary(RESOURCE_TYPES.REMINDER_DETAIL, ACTIONS.STATUS_CHANGE, {
+      id,
+      from_status: 'pending',
+      to_status: status,
+      plot_number: detail.plot_number,
+      contact_name: detail.contact_name,
+      failure_reason: status === 'failed' ? failure_reason : null
+    });
+    await logOperation(req, RESOURCE_TYPES.REMINDER_DETAIL, id, ACTIONS.STATUS_CHANGE, summary);
+
+    success(res, updatedDetail, '提醒状态更新成功');
   } catch (err) {
     error(res, err.message, 500);
   }

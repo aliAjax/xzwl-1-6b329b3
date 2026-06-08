@@ -9,6 +9,7 @@ const RESOURCE_TYPES = {
   VISIT_RECORD: 'visit_record',
   BILL_BATCH: 'bill_batch',
   REMINDER_BATCH: 'reminder_batch',
+  REMINDER_DETAIL: 'reminder_detail',
   MAINTENANCE_ORDER: 'maintenance_order',
   FESTIVAL_SCHEDULE: 'festival_schedule',
   FESTIVAL_TIME_SLOT: 'festival_time_slot',

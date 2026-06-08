@@ -172,6 +172,18 @@ const reminderDetailQueryValidation = [
   validate
 ];
 
+const reminderDetailStatusValidation = [
+  body('status').isIn(['sent', 'failed', 'ignored']).withMessage('状态无效，只能是 sent、failed 或 ignored'),
+  body('failure_reason').custom((value, { req }) => {
+    if (req.body.status === 'failed' && !value) {
+      throw new Error('发送失败时 failure_reason 不能为空');
+    }
+    return true;
+  }),
+  body('failure_reason').optional({ checkFalsy: true }).isString().withMessage('失败原因必须是字符串'),
+  validate
+];
+
 const maintenanceOrderCreateValidation = [
   body('plot_id').isInt().withMessage('墓位ID无效'),
   body('reason').notEmpty().withMessage('维修原因不能为空'),
@@ -399,6 +411,7 @@ module.exports = {
   reminderGenerateValidation,
   reminderBatchQueryValidation,
   reminderDetailQueryValidation,
+  reminderDetailStatusValidation,
   maintenanceOrderCreateValidation,
   maintenanceOrderQueryValidation,
   maintenanceOrderStartValidation,
