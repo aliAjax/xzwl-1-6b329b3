@@ -1,4 +1,5 @@
 const express = require('express');
+const moment = require('moment');
 const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
@@ -8,9 +9,72 @@ const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit'
 
 const router = express.Router();
 
+const checkAndReleaseExpiredReservations = async (plotId) => {
+  const now = moment().format('YYYY-MM-DD HH:mm:ss');
+  const expired = await all(`
+    SELECT r.id, r.contract_id, r.plot_id
+    FROM plot_reservations r
+    INNER JOIN contracts c ON r.contract_id = c.id
+    WHERE r.plot_id = ? 
+      AND r.status = 'active' 
+      AND c.status = 'reserved'
+      AND r.expires_at < ?
+  `, [plotId, now]);
+
+  for (const r of expired) {
+    await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
+    await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL WHERE id = ?", [r.contract_id]);
+    
+    const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
+    const hasOtherActive = await get(`
+      SELECT COUNT(*) as count 
+      FROM plot_reservations r
+      INNER JOIN contracts c ON r.contract_id = c.id
+      WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
+    `, [r.plot_id, r.contract_id]);
+    
+    if (hasOtherActive.count === 0 && plot.status === '预留中') {
+      await run('UPDATE plots SET status = ? WHERE id = ?', ['空闲', r.plot_id]);
+    }
+  }
+};
+
+const checkAndReleaseAllExpiredReservations = async () => {
+  const now = moment().format('YYYY-MM-DD HH:mm:ss');
+  const expired = await all(`
+    SELECT r.id, r.contract_id, r.plot_id
+    FROM plot_reservations r
+    INNER JOIN contracts c ON r.contract_id = c.id
+    WHERE r.status = 'active'
+      AND c.status = 'reserved'
+      AND r.expires_at < ?
+  `, [now]);
+
+  for (const r of expired) {
+    await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
+    await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL WHERE id = ?", [r.contract_id]);
+    
+    const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
+    const hasOtherActive = await get(`
+      SELECT COUNT(*) as count 
+      FROM plot_reservations r
+      INNER JOIN contracts c ON r.contract_id = c.id
+      WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
+    `, [r.plot_id, r.contract_id]);
+    
+    if (hasOtherActive.count === 0 && plot.status === '预留中') {
+      await run('UPDATE plots SET status = ? WHERE id = ?', ['空闲', r.plot_id]);
+    }
+  }
+};
+
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, area = '', status = '', keyword = '' } = req.query;
+    const { page = 1, pageSize = 10, area = '', status = '', keyword = '', auto_release = 'true' } = req.query;
+    
+    if (auto_release === 'true') {
+      await checkAndReleaseAllExpiredReservations();
+    }
     
     let baseSql = `
       SELECT p.*, 
@@ -57,6 +121,11 @@ router.get('/areas', authenticate, async (req, res) => {
 router.get('/area/:area/occupancy', authenticate, async (req, res) => {
   try {
     const { area } = req.params;
+    const { auto_release = 'true' } = req.query;
+    
+    if (auto_release === 'true') {
+      await checkAndReleaseAllExpiredReservations();
+    }
     
     const areaExists = await get('SELECT COUNT(*) as count FROM plots WHERE area = ?', [area]);
     if (areaExists.count === 0) {
@@ -113,6 +182,12 @@ router.get('/area/:area/occupancy', authenticate, async (req, res) => {
 
 router.get('/statistics', authenticate, async (req, res) => {
   try {
+    const { auto_release = 'true' } = req.query;
+    
+    if (auto_release === 'true') {
+      await checkAndReleaseAllExpiredReservations();
+    }
+    
     const stats = await get(`
       SELECT 
         COUNT(*) as total,
@@ -153,6 +228,12 @@ router.get('/statistics', authenticate, async (req, res) => {
 
 router.get('/:id', authenticate, idParamValidation, async (req, res) => {
   try {
+    const { auto_release = 'true' } = req.query;
+    
+    if (auto_release === 'true') {
+      await checkAndReleaseExpiredReservations(req.params.id);
+    }
+    
     const plot = await get(`
       SELECT p.*, 
              d.id as deceased_id,

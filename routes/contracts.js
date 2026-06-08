@@ -46,7 +46,11 @@ const generateContractNo = () => {
   return `HT${date}${random}`;
 };
 
-const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDeceasedId = null) => {
+const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true) => {
+  if (autoReleaseExpired) {
+    await checkAndReleaseExpiredReservations(plotId);
+  }
+
   const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
   if (!plot) {
     return { available: false, reason: '墓位不存在' };
@@ -74,24 +78,37 @@ const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDe
     };
   }
 
+  const now = moment();
   const activeReservation = await get(`
-    SELECT r.id, r.expires_at, c.contract_no, c.id as contract_id
+    SELECT r.id, r.expires_at, c.contract_no, c.id as contract_id, c.status as contract_status
     FROM plot_reservations r
     INNER JOIN contracts c ON r.contract_id = c.id
     WHERE r.plot_id = ? 
       AND r.status = 'active' 
-      AND c.status != 'voided'
+      AND c.status = 'reserved'
       ${excludeContractId ? 'AND c.id != ?' : ''}
   `, excludeContractId ? [plotId, excludeContractId] : [plotId]);
 
   if (activeReservation) {
-    if (moment(activeReservation.expires_at).isAfter(moment())) {
+    if (moment(activeReservation.expires_at).isAfter(now)) {
       return { 
         available: false, 
         reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}`,
         occupied_by: 'reservation',
         contract_id: activeReservation.contract_id,
-        contract_no: activeReservation.contract_no
+        contract_no: activeReservation.contract_no,
+        expires_at: activeReservation.expires_at,
+        is_expired: false
+      };
+    } else {
+      return {
+        available: false,
+        reason: `墓位预留已过期，请刷新后重试`,
+        occupied_by: 'reservation',
+        contract_id: activeReservation.contract_id,
+        contract_no: activeReservation.contract_no,
+        expires_at: activeReservation.expires_at,
+        is_expired: true
       };
     }
   }
@@ -100,7 +117,7 @@ const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDe
     SELECT id, contract_no, status, deceased_id
     FROM contracts 
     WHERE plot_id = ? 
-      AND status IN ('reserved', 'signed', 'effective')
+      AND status IN ('signed', 'effective')
       ${excludeContractId ? 'AND id != ?' : ''}
     LIMIT 1
   `, excludeContractId ? [plotId, excludeContractId] : [plotId]);
@@ -174,7 +191,207 @@ const checkAndReleaseExpiredReservations = async (plotId) => {
   }
 };
 
-const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = null, excludeDeceasedId = null) => {
+const logStatusChangeWithOperator = async (contractId, fromStatus, toStatus, operatorId, operatorName, remark = '') => {
+  await run(
+    'INSERT INTO contract_status_logs (contract_id, from_status, to_status, operator_id, operator_name, remark) VALUES (?, ?, ?, ?, ?, ?)',
+    [contractId, fromStatus, toStatus, operatorId, operatorName, remark]
+  );
+};
+
+const logOperationWithOperator = async (resourceType, resourceId, action, summary, operatorId, operatorName, ipAddress = '') => {
+  try {
+    await run(
+      'INSERT INTO operation_logs (user_id, user_name, resource_type, resource_id, action, summary, ip_address) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [operatorId, operatorName, resourceType, resourceId, action, summary, ipAddress]
+    );
+  } catch (err) {
+    console.error('操作日志记录失败:', err);
+  }
+};
+
+const validateReservationForRelease = async (reservation) => {
+  const contract = await get('SELECT id, contract_no, status, plot_id, reserved_expires_at FROM contracts WHERE id = ?', [reservation.contract_id]);
+  
+  if (!contract) {
+    return { valid: false, reason: '合同不存在' };
+  }
+  
+  if (contract.status === CONTRACT_STATUSES.SIGNED) {
+    return { valid: false, reason: '合同已签约，不能释放预留' };
+  }
+  
+  if (contract.status === CONTRACT_STATUSES.EFFECTIVE) {
+    return { valid: false, reason: '合同已生效，不能释放预留' };
+  }
+  
+  if (contract.status === CONTRACT_STATUSES.VOIDED) {
+    return { valid: false, reason: '合同已作废，不能释放预留' };
+  }
+  
+  if (contract.status !== CONTRACT_STATUSES.RESERVED) {
+    return { valid: false, reason: `合同状态为${STATUS_NAMES[contract.status]}，不是预留状态` };
+  }
+  
+  const now = moment();
+  const expiresAt = moment(contract.reserved_expires_at);
+  if (expiresAt.isAfter(now)) {
+    return { valid: false, reason: `预留尚未过期，有效期至${contract.reserved_expires_at}` };
+  }
+  
+  const plot = await get('SELECT id, plot_number, status FROM plots WHERE id = ?', [contract.plot_id]);
+  if (!plot) {
+    return { valid: false, reason: '墓位不存在' };
+  }
+  
+  return { valid: true, contract, plot };
+};
+
+const releaseSingleExpiredReservation = async (reservation, operatorId, operatorName, ipAddress = '') => {
+  const validation = await validateReservationForRelease(reservation);
+  
+  if (!validation.valid) {
+    return {
+      success: false,
+      reservation_id: reservation.id,
+      contract_id: reservation.contract_id,
+      contract_no: reservation.contract_no,
+      plot_id: reservation.plot_id,
+      plot_number: reservation.plot_number,
+      reason: validation.reason
+    };
+  }
+  
+  const { contract, plot } = validation;
+  
+  try {
+    await runInTransaction(async () => {
+      await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [reservation.id]);
+      
+      await run(
+        "UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [contract.id]
+      );
+      
+      const hasOtherActive = await get(`
+        SELECT COUNT(*) as count 
+        FROM plot_reservations r
+        INNER JOIN contracts c ON r.contract_id = c.id
+        WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
+      `, [plot.id, contract.id]);
+      
+      if (hasOtherActive.count === 0 && plot.status === PLOT_STATUSES.RESERVED) {
+        await updatePlotStatus(plot.id, PLOT_STATUSES.AVAILABLE);
+      }
+      
+      await logStatusChangeWithOperator(
+        contract.id,
+        CONTRACT_STATUSES.RESERVED,
+        CONTRACT_STATUSES.DRAFT,
+        operatorId,
+        operatorName,
+        '预留过期自动释放'
+      );
+      
+      const summary = `合同${contract.contract_no}预留过期已释放，墓位${plot.plot_number}已恢复空闲状态`;
+      await logOperationWithOperator(
+        RESOURCE_TYPES.CONTRACT,
+        contract.id,
+        ACTIONS.STATUS_CHANGE,
+        summary,
+        operatorId,
+        operatorName,
+        ipAddress
+      );
+      
+      await logOperationWithOperator(
+        RESOURCE_TYPES.PLOT,
+        plot.id,
+        ACTIONS.STATUS_CHANGE,
+        `墓位${plot.plot_number}因合同${contract.contract_no}预留过期已释放，状态变更为空闲`,
+        operatorId,
+        operatorName,
+        ipAddress
+      );
+    });
+    
+    return {
+      success: true,
+      reservation_id: reservation.id,
+      contract_id: contract.id,
+      contract_no: contract.contract_no,
+      plot_id: plot.id,
+      plot_number: plot.plot_number,
+      expires_at: contract.reserved_expires_at,
+      released_at: moment().format('YYYY-MM-DD HH:mm:ss')
+    };
+  } catch (err) {
+    return {
+      success: false,
+      reservation_id: reservation.id,
+      contract_id: contract.id,
+      contract_no: contract.contract_no,
+      plot_id: plot.id,
+      plot_number: plot.plot_number,
+      reason: `释放失败: ${err.message}`
+    };
+  }
+};
+
+const scanAndReleaseExpiredReservations = async (operatorId, operatorName, ipAddress = '') => {
+  const now = moment().format('YYYY-MM-DD HH:mm:ss');
+  
+  const candidates = await all(`
+    SELECT 
+      r.id as reservation_id,
+      r.contract_id,
+      r.plot_id,
+      r.expires_at,
+      c.contract_no,
+      c.status as contract_status,
+      p.plot_number
+    FROM plot_reservations r
+    INNER JOIN contracts c ON r.contract_id = c.id
+    INNER JOIN plots p ON r.plot_id = p.id
+    WHERE r.status = 'active'
+      AND c.status = 'reserved'
+      AND r.expires_at < ?
+    ORDER BY r.expires_at ASC
+  `, [now]);
+  
+  const results = {
+    scan_time: now,
+    total_candidates: candidates.length,
+    success_count: 0,
+    failed_count: 0,
+    success_details: [],
+    failed_details: []
+  };
+  
+  for (const candidate of candidates) {
+    const reservation = {
+      id: candidate.reservation_id,
+      contract_id: candidate.contract_id,
+      plot_id: candidate.plot_id,
+      contract_no: candidate.contract_no,
+      plot_number: candidate.plot_number,
+      expires_at: candidate.expires_at
+    };
+    
+    const result = await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress);
+    
+    if (result.success) {
+      results.success_count++;
+      results.success_details.push(result);
+    } else {
+      results.failed_count++;
+      results.failed_details.push(result);
+    }
+  }
+  
+  return results;
+};
+
+const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true) => {
   await run('BEGIN IMMEDIATE');
   
   try {
@@ -184,7 +401,7 @@ const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = nu
       return { available: false, reason: '墓位不存在' };
     }
     
-    const availability = await checkPlotAvailability(plotId, excludeContractId, excludeDeceasedId);
+    const availability = await checkPlotAvailability(plotId, excludeContractId, excludeDeceasedId, autoReleaseExpired);
     return { ...availability, _locked: true };
   } catch (err) {
     await run('ROLLBACK');
@@ -209,13 +426,156 @@ router.get('/check-plot-availability', authenticate, async (req, res) => {
   }
 });
 
+router.get('/expired-reservations', authenticate, async (req, res) => {
+  try {
+    const { page = 1, pageSize = 20 } = req.query;
+    const now = moment().format('YYYY-MM-DD HH:mm:ss');
+    
+    const baseSql = `
+      SELECT 
+        r.id as reservation_id,
+        r.contract_id,
+        r.plot_id,
+        r.contact_name,
+        r.contact_phone,
+        r.reserved_at,
+        r.expires_at,
+        c.contract_no,
+        c.status as contract_status,
+        p.plot_number,
+        p.area,
+        p.status as plot_status
+      FROM plot_reservations r
+      INNER JOIN contracts c ON r.contract_id = c.id
+      INNER JOIN plots p ON r.plot_id = p.id
+      WHERE r.status = 'active'
+        AND c.status = 'reserved'
+        AND r.expires_at < ?
+      ORDER BY r.expires_at ASC
+    `;
+    
+    const result = await paginateQuery(baseSql, [now], page, pageSize);
+    
+    const dataWithExpiryInfo = result.data.map(item => {
+      const expiresAt = moment(item.expires_at);
+      const nowMoment = moment();
+      const daysExpired = Math.floor(nowMoment.diff(expiresAt, 'days'));
+      const hoursExpired = Math.floor(nowMoment.diff(expiresAt, 'hours') % 24);
+      
+      return {
+        ...item,
+        status_name: STATUS_NAMES[item.contract_status] || item.contract_status,
+        days_expired: daysExpired,
+        hours_expired: hoursExpired,
+        expired_duration: daysExpired > 0 
+          ? `${daysExpired}天${hoursExpired}小时` 
+          : `${hoursExpired}小时`
+      };
+    });
+    
+    paginate(res, dataWithExpiryInfo, result.total, page, pageSize);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+router.post('/scan-expired-reservations', authenticate, async (req, res) => {
+  try {
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
+    
+    const results = await scanAndReleaseExpiredReservations(operatorId, operatorName, ipAddress);
+    
+    const summary = `手动扫描过期预留：共发现${results.total_candidates}个过期预留，成功释放${results.success_count}个，失败${results.failed_count}个`;
+    await logOperation(req, RESOURCE_TYPES.CONTRACT, 0, ACTIONS.STATUS_CHANGE, summary);
+    
+    success(res, results, summary);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+router.post('/release-expired-reservation/:id', authenticate, idParamValidation, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
+    
+    const reservation = await get(`
+      SELECT 
+        r.id,
+        r.contract_id,
+        r.plot_id,
+        c.contract_no,
+        p.plot_number
+      FROM plot_reservations r
+      INNER JOIN contracts c ON r.contract_id = c.id
+      INNER JOIN plots p ON r.plot_id = p.id
+      WHERE r.id = ?
+    `, [id]);
+    
+    if (!reservation) {
+      return error(res, '预留记录不存在', 404);
+    }
+    
+    const result = await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress);
+    
+    if (result.success) {
+      success(res, result, '过期预留释放成功');
+    } else {
+      error(res, result.reason, 400);
+    }
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+const autoReleaseExpiredReservations = async () => {
+  const now = moment().format('YYYY-MM-DD HH:mm:ss');
+  const expired = await all(`
+    SELECT r.id, r.contract_id, r.plot_id
+    FROM plot_reservations r
+    INNER JOIN contracts c ON r.contract_id = c.id
+    WHERE r.status = 'active'
+      AND c.status = 'reserved'
+      AND r.expires_at < ?
+  `, [now]);
+
+  for (const r of expired) {
+    const contract = await get('SELECT id, contract_no, status FROM contracts WHERE id = ?', [r.contract_id]);
+    
+    if (contract && contract.status === CONTRACT_STATUSES.RESERVED) {
+      await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
+      await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [r.contract_id]);
+      
+      const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
+      const hasOtherActive = await get(`
+        SELECT COUNT(*) as count 
+        FROM plot_reservations r
+        INNER JOIN contracts c ON r.contract_id = c.id
+        WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
+      `, [r.plot_id, r.contract_id]);
+      
+      if (hasOtherActive.count === 0 && plot.status === PLOT_STATUSES.RESERVED) {
+        await updatePlotStatus(r.plot_id, PLOT_STATUSES.AVAILABLE);
+      }
+    }
+  }
+};
+
 router.get('/', authenticate, contractQueryValidation, async (req, res) => {
   try {
     const { 
       page = 1, pageSize = 10, status = '', plot_id = '', 
       contact_id = '', keyword = '', start_date = '', end_date = '',
-      expiring_within_days = ''
+      expiring_within_days = '', auto_release = 'true'
     } = req.query;
+
+    if (auto_release === 'true') {
+      await autoReleaseExpiredReservations();
+    }
 
     let baseSql = `
       SELECT c.*,

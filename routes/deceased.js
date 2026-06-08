@@ -1,4 +1,5 @@
 const express = require('express');
+const moment = require('moment');
 const { run, get, paginateQuery, all, runInTransaction } = require('../utils/dbHelper');
 const { success, error, paginate, handleError } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
@@ -8,7 +9,41 @@ const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit'
 
 const router = express.Router();
 
-const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null) => {
+const checkAndReleaseExpiredReservations = async (plotId) => {
+  const now = moment().format('YYYY-MM-DD HH:mm:ss');
+  const expired = await all(`
+    SELECT r.id, r.contract_id, r.plot_id
+    FROM plot_reservations r
+    INNER JOIN contracts c ON r.contract_id = c.id
+    WHERE r.plot_id = ? 
+      AND r.status = 'active' 
+      AND c.status = 'reserved'
+      AND r.expires_at < ?
+  `, [plotId, now]);
+
+  for (const r of expired) {
+    await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
+    await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL WHERE id = ?", [r.contract_id]);
+    
+    const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
+    const hasOtherActive = await get(`
+      SELECT COUNT(*) as count 
+      FROM plot_reservations r
+      INNER JOIN contracts c ON r.contract_id = c.id
+      WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
+    `, [r.plot_id, r.contract_id]);
+    
+    if (hasOtherActive.count === 0 && plot.status === '预留中') {
+      await run('UPDATE plots SET status = ? WHERE id = ?', ['空闲', r.plot_id]);
+    }
+  }
+};
+
+const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null, autoReleaseExpired = true) => {
+  if (autoReleaseExpired) {
+    await checkAndReleaseExpiredReservations(plotId);
+  }
+
   const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
   if (!plot) {
     return { available: false, reason: '墓位不存在' };
@@ -33,23 +68,29 @@ const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null
     };
   }
 
+  const now = moment();
   const activeReservation = await get(`
-    SELECT r.id, r.expires_at, c.contract_no
+    SELECT r.id, r.expires_at, c.contract_no, c.status as contract_status
     FROM plot_reservations r
     INNER JOIN contracts c ON r.contract_id = c.id
     WHERE r.plot_id = ? 
       AND r.status = 'active' 
-      AND c.status != 'voided'
-      AND c.status != 'effective'
+      AND c.status = 'reserved'
     LIMIT 1
   `, [plotId]);
 
-  const moment = require('moment');
   if (activeReservation) {
-    if (moment(activeReservation.expires_at).isAfter(moment())) {
+    if (moment(activeReservation.expires_at).isAfter(now)) {
       return { 
         available: false, 
-        reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}，请先通过合同流程处理` 
+        reason: `墓位已被合同${activeReservation.contract_no}预留，有效期至${activeReservation.expires_at}，请先通过合同流程处理`,
+        is_expired: false
+      };
+    } else {
+      return {
+        available: false,
+        reason: `墓位预留已过期，请刷新后重试`,
+        is_expired: true
       };
     }
   }
@@ -58,12 +99,12 @@ const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null
     SELECT id, contract_no, status
     FROM contracts 
     WHERE plot_id = ? 
-      AND status IN ('reserved', 'signed')
+      AND status IN ('signed', 'effective')
     LIMIT 1
   `, [plotId]);
 
   if (activeContract) {
-    const statusNames = { reserved: '预留中', signed: '已签约' };
+    const statusNames = { signed: '已签约', effective: '已生效' };
     return { 
       available: false, 
       reason: `墓位已关联${statusNames[activeContract.status]}合同${activeContract.contract_no}，请先通过合同流程处理` 
