@@ -213,7 +213,8 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
   try {
     const { 
       page = 1, pageSize = 10, status = '', plot_id = '', 
-      contact_id = '', keyword = '', start_date = '', end_date = '' 
+      contact_id = '', keyword = '', start_date = '', end_date = '',
+      expiring_within_days = ''
     } = req.query;
 
     let baseSql = `
@@ -234,7 +235,12 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
     `;
     const params = [];
 
-    if (status) {
+    if (expiring_within_days) {
+      const now = moment();
+      const cutoffDate = now.clone().add(parseInt(expiring_within_days), 'days').format('YYYY-MM-DD HH:mm:ss');
+      baseSql += " AND c.status = 'reserved' AND c.reserved_expires_at <= ?";
+      params.push(cutoffDate);
+    } else if (status) {
       baseSql += ' AND c.status = ?';
       params.push(status);
     }
@@ -266,10 +272,24 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
 
     const result = await paginateQuery(baseSql, params, page, pageSize, 'c.created_at DESC');
     
-    const dataWithStatusNames = result.data.map(item => ({
-      ...item,
-      status_name: STATUS_NAMES[item.status] || item.status
-    }));
+    const now = moment();
+    const dataWithStatusNames = result.data.map(item => {
+      let days_remaining = null;
+      let is_expired = null;
+      
+      if (item.status === 'reserved' && item.reserved_expires_at) {
+        const expiresAt = moment(item.reserved_expires_at);
+        days_remaining = expiresAt.diff(now, 'days');
+        is_expired = days_remaining < 0;
+      }
+      
+      return {
+        ...item,
+        status_name: STATUS_NAMES[item.status] || item.status,
+        days_remaining,
+        is_expired
+      };
+    });
 
     paginate(res, dataWithStatusNames, result.total, page, pageSize);
   } catch (err) {

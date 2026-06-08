@@ -339,6 +339,7 @@ const contractQueryValidation = [
   query('keyword').optional({ checkFalsy: true }).notEmpty().withMessage('搜索关键词不能为空'),
   query('start_date').optional({ checkFalsy: true }).isISO8601().withMessage('开始日期格式无效'),
   query('end_date').optional({ checkFalsy: true }).isISO8601().withMessage('结束日期格式无效'),
+  query('expiring_within_days').optional({ checkFalsy: true }).isInt({ min: 1, max: 365 }).withMessage('即将到期天数无效，范围1-365天'),
   query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
   query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
   validate
