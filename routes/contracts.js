@@ -235,8 +235,9 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
     `;
     const params = [];
 
+    const now = moment();
+    
     if (expiring_within_days) {
-      const now = moment();
       const cutoffDate = now.clone().add(parseInt(expiring_within_days), 'days').format('YYYY-MM-DD HH:mm:ss');
       baseSql += " AND c.status = 'reserved' AND c.reserved_expires_at <= ?";
       params.push(cutoffDate);
@@ -272,15 +273,16 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
 
     const result = await paginateQuery(baseSql, params, page, pageSize, 'c.created_at DESC');
     
-    const now = moment();
     const dataWithStatusNames = result.data.map(item => {
       let days_remaining = null;
       let is_expired = null;
       
       if (item.status === 'reserved' && item.reserved_expires_at) {
         const expiresAt = moment(item.reserved_expires_at);
-        days_remaining = expiresAt.diff(now, 'days');
-        is_expired = days_remaining < 0;
+        const diffMs = expiresAt.diff(now);
+        const diffDays = diffMs / (1000 * 60 * 60 * 24);
+        days_remaining = Math.ceil(diffDays);
+        is_expired = expiresAt.isBefore(now);
       }
       
       return {
