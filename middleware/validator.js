@@ -94,6 +94,15 @@ const serviceOrderCreateValidation = [
   validate
 ];
 
+const serviceOrderBatchCreateFromAppointmentValidation = [
+  body('services').isArray({ min: 1 }).withMessage('服务列表不能为空且必须是数组'),
+  body('services.*.service_item_id').isInt().withMessage('服务项目ID无效'),
+  body('services.*.quantity').isInt({ min: 1 }).withMessage('数量无效'),
+  body('services.*.unit_price').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('单价无效'),
+  body('services.*.remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
 const serviceOrderStatusValidation = [
   body('status').isIn(['待处理', '处理中', '已完成', '已取消']).withMessage('状态无效'),
   validate
@@ -410,6 +419,7 @@ module.exports = {
   visitRecordCreateValidation,
   serviceItemCreateValidation,
   serviceOrderCreateValidation,
+  serviceOrderBatchCreateFromAppointmentValidation,
   serviceOrderStatusValidation,
   idParamValidation,
   slotIdParamValidation,

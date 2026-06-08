@@ -1,9 +1,9 @@
 const express = require('express');
 const moment = require('moment');
-const { run, get, all, paginateQuery } = require('../utils/dbHelper');
+const { run, get, all, paginateQuery, runInTransaction } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
-const { serviceOrderCreateValidation, serviceOrderStatusValidation, idParamValidation } = require('../middleware/validator');
+const { serviceOrderCreateValidation, serviceOrderBatchCreateFromAppointmentValidation, serviceOrderStatusValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit');
 
@@ -225,6 +225,126 @@ router.post('/', authenticate, serviceOrderCreateValidation, async (req, res) =>
     );
     
     success(res, { id: result.id, order_no: orderNo }, '服务订单创建成功');
+  } catch (err) {
+    error(res, err.message, 500);
+  }
+});
+
+router.post('/from-appointment/:id', authenticate, idParamValidation, serviceOrderBatchCreateFromAppointmentValidation, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { services } = req.body;
+
+    const appointment = await get(`
+      SELECT a.*,
+             c.name as contact_name,
+             c.phone as contact_phone
+      FROM appointments a
+      LEFT JOIN contacts c ON a.contact_id = c.id
+      WHERE a.id = ?
+    `, [id]);
+
+    if (!appointment) {
+      return error(res, '预约记录不存在', 404);
+    }
+
+    const serviceItemIds = services.map(s => s.service_item_id);
+    const placeholders = serviceItemIds.map(() => '?').join(',');
+    const serviceItems = await all(`
+      SELECT id, name, price, status, category
+      FROM service_items
+      WHERE id IN (${placeholders})
+    `, serviceItemIds);
+
+    const serviceItemMap = {};
+    serviceItems.forEach(item => {
+      serviceItemMap[item.id] = item;
+    });
+
+    for (const service of services) {
+      const item = serviceItemMap[service.service_item_id];
+      if (!item) {
+        return error(res, `服务项目ID ${service.service_item_id} 不存在`, 400);
+      }
+      if (item.status !== '上架') {
+        return error(res, `服务项目"${item.name}"已下架，无法下单`, 400);
+      }
+    }
+
+    const existingOrders = await all(`
+      SELECT service_item_id
+      FROM service_orders
+      WHERE appointment_id = ?
+    `, [id]);
+
+    const existingServiceItemIds = existingOrders.map(o => o.service_item_id);
+    const duplicateServices = services.filter(s => existingServiceItemIds.includes(s.service_item_id));
+    if (duplicateServices.length > 0) {
+      const duplicateNames = duplicateServices
+        .map(s => serviceItemMap[s.service_item_id]?.name || s.service_item_id)
+        .join('、');
+      return error(res, `该预约已存在服务订单：${duplicateNames}，请勿重复创建`, 400);
+    }
+
+    const results = await runInTransaction(async () => {
+      const createdOrders = [];
+
+      for (const service of services) {
+        const serviceItem = serviceItemMap[service.service_item_id];
+        const orderNo = generateOrderNo();
+        const finalUnitPrice = service.unit_price !== undefined ? service.unit_price : serviceItem.price;
+        const finalTotalAmount = finalUnitPrice * (service.quantity || 1);
+
+        const result = await run(
+          `INSERT INTO service_orders
+           (order_no, service_item_id, contact_id, plot_id, appointment_id, contact_name, contact_phone,
+            service_date, service_time, quantity, unit_price, total_amount, remark)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            orderNo,
+            service.service_item_id,
+            appointment.contact_id,
+            appointment.plot_id,
+            id,
+            appointment.contact_name,
+            appointment.contact_phone,
+            appointment.appointment_date,
+            appointment.appointment_time,
+            service.quantity || 1,
+            finalUnitPrice,
+            finalTotalAmount,
+            service.remark || null
+          ]
+        );
+
+        createdOrders.push({
+          id: result.id,
+          order_no: orderNo,
+          service_item_id: service.service_item_id,
+          service_item_name: serviceItem.name,
+          quantity: service.quantity || 1,
+          unit_price: finalUnitPrice,
+          total_amount: finalTotalAmount
+        });
+      }
+
+      return createdOrders;
+    });
+
+    for (const order of results) {
+      const summary = generateSummary(RESOURCE_TYPES.SERVICE_ORDER, ACTIONS.CREATE, {
+        service_item_name: order.service_item_name,
+        quantity: order.quantity,
+        total_amount: order.total_amount
+      });
+      await logOperation(req, RESOURCE_TYPES.SERVICE_ORDER, order.id, ACTIONS.CREATE, summary);
+    }
+
+    success(res, {
+      appointment_id: id,
+      total_count: results.length,
+      orders: results
+    }, '批量创建服务订单成功');
   } catch (err) {
     error(res, err.message, 500);
   }

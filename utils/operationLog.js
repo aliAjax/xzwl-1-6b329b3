@@ -16,7 +16,8 @@ const RESOURCE_TYPES = {
   FESTIVAL_STAFF_SCHEDULE: 'festival_staff_schedule',
   CONTRACT: 'contract',
   CONTRACT_FEE_ITEM: 'contract_fee_item',
-  PLOT_RESERVATION: 'plot_reservation'
+  PLOT_RESERVATION: 'plot_reservation',
+  SERVICE_ORDER: 'service_order'
 };
 
 const ACTIONS = {
@@ -75,7 +76,8 @@ const generateSummary = (resourceType, action, data, oldData = null) => {
     festival_staff_schedule: '工作人员排班',
     contract: '合同',
     contract_fee_item: '合同费用明细',
-    plot_reservation: '墓位预留'
+    plot_reservation: '墓位预留',
+    service_order: '服务订单'
   };
 
   const actionNames = {
