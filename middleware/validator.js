@@ -367,6 +367,13 @@ const rollbackApproveValidation = [
   validate
 ];
 
+const staffFollowUpQueryValidation = [
+  query('staff_id').optional({ checkFalsy: true }).isInt().withMessage('员工ID无效'),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('页码无效'),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('每页数量无效'),
+  validate
+];
+
 module.exports = {
   loginValidation,
   userCreateValidation,
@@ -413,5 +420,6 @@ module.exports = {
   contractQueryValidation,
   rollbackRequestCreateValidation,
   rollbackRequestQueryValidation,
-  rollbackApproveValidation
+  rollbackApproveValidation,
+  staffFollowUpQueryValidation
 };

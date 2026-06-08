@@ -3,7 +3,7 @@ const moment = require('moment');
 const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
-const { visitRecordCreateValidation, idParamValidation } = require('../middleware/validator');
+const { visitRecordCreateValidation, idParamValidation, staffFollowUpQueryValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
@@ -117,6 +117,130 @@ router.get('/followup', authenticate, async (req, res) => {
         overdue: overdue.length
       }
     }, '待跟进记录查询成功');
+  } catch (err) {
+    error(res, err.message, 500);
+  }
+});
+
+router.get('/followup/staff', authenticate, staffFollowUpQueryValidation, async (req, res) => {
+  try {
+    const { page = 1, pageSize = 20, staff_id } = req.query;
+    const currentUserId = req.user.id;
+    const currentUserRole = req.user.role;
+
+    let targetUserId = currentUserId;
+    if (staff_id) {
+      if (currentUserRole === 'admin') {
+        targetUserId = parseInt(staff_id);
+        const staff = await get('SELECT id, name FROM users WHERE id = ? AND status = "active"', [targetUserId]);
+        if (!staff) {
+          return error(res, '员工不存在或已停用', 404);
+        }
+      } else if (parseInt(staff_id) !== currentUserId) {
+        return error(res, '权限不足，只能查看自己的跟进任务', 403);
+      }
+    }
+
+    const today = moment().format('YYYY-MM-DD');
+    const sevenDaysLater = moment().add(7, 'days').format('YYYY-MM-DD');
+
+    const baseSql = `
+      SELECT v.id,
+             v.contact_id,
+             v.follow_up_date,
+             v.content,
+             v.status,
+             c.name as contact_name,
+             c.phone as contact_phone,
+             julianday(?) - julianday(v.follow_up_date) as days_overdue_raw,
+             CASE 
+               WHEN v.follow_up_date < ? THEN 1
+               ELSE 0
+             END as is_overdue
+      FROM visit_records v
+      LEFT JOIN contacts c ON v.contact_id = c.id
+      WHERE v.status = '待跟进'
+        AND v.user_id = ?
+        AND (v.follow_up_date <= ? OR v.follow_up_date < ?)
+    `;
+    const params = [today, today, targetUserId, sevenDaysLater, today];
+
+    const countSql = `
+      SELECT COUNT(*) as total
+      FROM visit_records v
+      WHERE v.status = '待跟进'
+        AND v.user_id = ?
+        AND (v.follow_up_date <= ? OR v.follow_up_date < ?)
+    `;
+    const countParams = [targetUserId, sevenDaysLater, today];
+
+    const countResult = await get(countSql, countParams);
+    const total = countResult.total;
+
+    const offset = (parseInt(page) - 1) * parseInt(pageSize);
+    const dataSql = baseSql + ' ORDER BY is_overdue DESC, v.follow_up_date ASC LIMIT ? OFFSET ?';
+    const dataParams = [...params, parseInt(pageSize), offset];
+
+    const records = await all(dataSql, dataParams);
+
+    const formattedRecords = records.map(record => {
+      const daysOverdue = record.days_overdue_raw;
+      let displayDays = 0;
+      if (record.is_overdue === 1) {
+        displayDays = Math.floor(daysOverdue);
+      } else {
+        displayDays = Math.ceil(-daysOverdue);
+      }
+
+      let summary = record.content || '';
+      if (summary.length > 50) {
+        summary = summary.substring(0, 50) + '...';
+      }
+
+      return {
+        id: record.id,
+        contact_name: record.contact_name,
+        contact_phone: record.contact_phone,
+        follow_up_date: record.follow_up_date,
+        is_overdue: record.is_overdue === 1,
+        days_overdue: record.is_overdue === 1 ? displayDays : 0,
+        days_remaining: record.is_overdue === 0 ? displayDays : 0,
+        summary: summary
+      };
+    });
+
+    const upcomingCountSql = `
+      SELECT COUNT(*) as count
+      FROM visit_records
+      WHERE status = '待跟进'
+        AND user_id = ?
+        AND follow_up_date >= ?
+        AND follow_up_date <= ?
+    `;
+    const upcomingResult = await get(upcomingCountSql, [targetUserId, today, sevenDaysLater]);
+
+    const overdueCountSql = `
+      SELECT COUNT(*) as count
+      FROM visit_records
+      WHERE status = '待跟进'
+        AND user_id = ?
+        AND follow_up_date < ?
+    `;
+    const overdueResult = await get(overdueCountSql, [targetUserId, today]);
+
+    success(res, {
+      list: formattedRecords,
+      pagination: {
+        total: total,
+        page: parseInt(page),
+        pageSize: parseInt(pageSize),
+        totalPages: Math.ceil(total / pageSize)
+      },
+      statistics: {
+        upcoming_7_days: upcomingResult.count || 0,
+        overdue: overdueResult.count || 0
+      }
+    }, '员工跟进任务查询成功');
   } catch (err) {
     error(res, err.message, 500);
   }
