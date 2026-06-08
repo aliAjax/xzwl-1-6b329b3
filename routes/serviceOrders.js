@@ -15,6 +15,13 @@ const generateOrderNo = () => {
   return `SO${date}${random}`;
 };
 
+const calculateAmount = (unitPrice, quantity) => {
+  const priceInCents = Math.round(parseFloat(unitPrice) * 100);
+  const qty = parseInt(quantity) || 1;
+  const totalInCents = priceInCents * qty;
+  return Math.round(totalInCents) / 100;
+};
+
 router.get('/', authenticate, async (req, res) => {
   try {
     const { page = 1, pageSize = 10, status = '', service_item_id = '', contact_id = '', plot_id = '', start_date = '', end_date = '', keyword = '' } = req.query;
@@ -212,8 +219,8 @@ router.post('/', authenticate, serviceOrderCreateValidation, async (req, res) =>
     }
     
     const orderNo = generateOrderNo();
-    const finalUnitPrice = unit_price !== undefined ? unit_price : serviceItem.price;
-    const finalTotalAmount = total_amount !== undefined ? total_amount : (finalUnitPrice * (quantity || 1));
+    const finalUnitPrice = unit_price !== undefined ? Number(unit_price) : Number(serviceItem.price);
+    const finalTotalAmount = total_amount !== undefined ? Number(total_amount) : calculateAmount(finalUnitPrice, quantity || 1);
     
     const result = await run(
       `INSERT INTO service_orders 
@@ -261,6 +268,22 @@ router.post('/from-appointment/:id', authenticate, idParamValidation, serviceOrd
       serviceItemMap[item.id] = item;
     });
 
+    const seenIds = new Set();
+    const batchDuplicates = [];
+    for (const service of services) {
+      if (seenIds.has(service.service_item_id)) {
+        batchDuplicates.push(service.service_item_id);
+      } else {
+        seenIds.add(service.service_item_id);
+      }
+    }
+    if (batchDuplicates.length > 0) {
+      const duplicateNames = batchDuplicates
+        .map(id => serviceItemMap[id]?.name || id)
+        .join('、');
+      return error(res, `同批请求中存在重复服务项目：${duplicateNames}`, 400);
+    }
+
     for (const service of services) {
       const item = serviceItemMap[service.service_item_id];
       if (!item) {
@@ -292,8 +315,8 @@ router.post('/from-appointment/:id', authenticate, idParamValidation, serviceOrd
       for (const service of services) {
         const serviceItem = serviceItemMap[service.service_item_id];
         const orderNo = generateOrderNo();
-        const finalUnitPrice = service.unit_price !== undefined ? service.unit_price : serviceItem.price;
-        const finalTotalAmount = finalUnitPrice * (service.quantity || 1);
+        const finalUnitPrice = service.unit_price !== undefined ? Number(service.unit_price) : Number(serviceItem.price);
+        const finalTotalAmount = calculateAmount(finalUnitPrice, service.quantity || 1);
 
         const result = await run(
           `INSERT INTO service_orders
@@ -536,8 +559,8 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
       }
     }
     
-    const finalUnitPrice = unit_price !== undefined ? unit_price : existing.unit_price;
-    const finalTotalAmount = total_amount !== undefined ? total_amount : (finalUnitPrice * (quantity || existing.quantity || 1));
+    const finalUnitPrice = unit_price !== undefined ? Number(unit_price) : Number(existing.unit_price);
+    const finalTotalAmount = total_amount !== undefined ? Number(total_amount) : calculateAmount(finalUnitPrice, quantity || existing.quantity || 1);
     
     await run(
       `UPDATE service_orders 
