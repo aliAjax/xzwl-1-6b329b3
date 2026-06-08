@@ -315,7 +315,7 @@ router.post('/from-appointment/:id', authenticate, idParamValidation, serviceOrd
       for (const service of services) {
         const serviceItem = serviceItemMap[service.service_item_id];
         const orderNo = generateOrderNo();
-        const finalUnitPrice = service.unit_price !== undefined ? Number(service.unit_price) : Number(serviceItem.price);
+        const finalUnitPrice = Number(serviceItem.price);
         const finalTotalAmount = calculateAmount(finalUnitPrice, service.quantity || 1);
 
         const result = await run(
