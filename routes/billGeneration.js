@@ -384,7 +384,7 @@ router.get('/batches/:id', authenticate, idParamValidation, async (req, res) => 
     const skipAmount = skipItems.length * batch.fee_standard;
     const errorAmount = unresolvedItems.length * batch.fee_standard;
     const resolvedAmount = resolvedItems.length * batch.fee_standard;
-    const totalAmount = successAmount + skipAmount + resolvedAmount + errorAmount;
+    const totalAmount = successAmount + skipAmount + errorAmount;
 
     success(res, {
       batch,
@@ -397,9 +397,9 @@ router.get('/batches/:id', authenticate, idParamValidation, async (req, res) => 
       exceptions: allExceptions,
       summary: {
         total_count: batch.total_count,
-        success_count: successBills.length,
-        skip_count: skipItems.length,
-        error_count: errorItems.length,
+        success_count: batch.success_count,
+        skip_count: batch.skip_count,
+        error_count: batch.error_count,
         unresolved_error_count: unresolvedItems.length,
         resolved_error_count: resolvedItems.length,
         total_amount: totalAmount,
