@@ -6,42 +6,13 @@ const { authenticate } = require('../middleware/auth');
 const { deceasedCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit');
+const { checkAndReleaseExpiredReservations } = require('./contracts');
 
 const router = express.Router();
 
-const checkAndReleaseExpiredReservations = async (plotId) => {
-  const now = moment().format('YYYY-MM-DD HH:mm:ss');
-  const expired = await all(`
-    SELECT r.id, r.contract_id, r.plot_id
-    FROM plot_reservations r
-    INNER JOIN contracts c ON r.contract_id = c.id
-    WHERE r.plot_id = ? 
-      AND r.status = 'active' 
-      AND c.status = 'reserved'
-      AND r.expires_at < ?
-  `, [plotId, now]);
-
-  for (const r of expired) {
-    await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
-    await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL WHERE id = ?", [r.contract_id]);
-    
-    const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
-    const hasOtherActive = await get(`
-      SELECT COUNT(*) as count 
-      FROM plot_reservations r
-      INNER JOIN contracts c ON r.contract_id = c.id
-      WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
-    `, [r.plot_id, r.contract_id]);
-    
-    if (hasOtherActive.count === 0 && plot.status === '预留中') {
-      await run('UPDATE plots SET status = ? WHERE id = ?', ['空闲', r.plot_id]);
-    }
-  }
-};
-
-const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null, autoReleaseExpired = true) => {
+const checkPlotAvailabilityForDeceased = async (plotId, excludeDeceasedId = null, autoReleaseExpired = true, operatorId = null, operatorName = '系统', ipAddress = '') => {
   if (autoReleaseExpired) {
-    await checkAndReleaseExpiredReservations(plotId);
+    await checkAndReleaseExpiredReservations(plotId, operatorId, operatorName, ipAddress);
   }
 
   const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
@@ -179,12 +150,15 @@ router.get('/:id', authenticate, idParamValidation, async (req, res) => {
 router.post('/', authenticate, deceasedCreateValidation, async (req, res) => {
   try {
     const { name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark } = req.body;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
     
     const result = await runInTransaction(async () => {
       let deceasedId;
       
       if (plot_id) {
-        const availability = await checkPlotAvailabilityForDeceased(plot_id);
+        const availability = await checkPlotAvailabilityForDeceased(plot_id, null, true, operatorId, operatorName, ipAddress);
         if (!availability.available) {
           throw new Error(availability.reason);
         }
@@ -238,6 +212,9 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, gender, birth_date, death_date, plot_id, relationship, interment_date, remark } = req.body;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
     
     const existing = await get('SELECT * FROM deceased WHERE id = ?', [id]);
     if (!existing) {
@@ -247,7 +224,7 @@ router.put('/:id', authenticate, idParamValidation, async (req, res) => {
     await runInTransaction(async () => {
       if (plot_id !== undefined && plot_id !== existing.plot_id) {
         if (plot_id !== null) {
-          const availability = await checkPlotAvailabilityForDeceased(plot_id, id);
+          const availability = await checkPlotAvailabilityForDeceased(plot_id, id, true, operatorId, operatorName, ipAddress);
           if (!availability.available) {
             throw new Error(availability.reason);
           }

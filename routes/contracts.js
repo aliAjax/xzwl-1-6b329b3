@@ -46,9 +46,9 @@ const generateContractNo = () => {
   return `HT${date}${random}`;
 };
 
-const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true) => {
+const checkPlotAvailability = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true, operatorId = null, operatorName = '系统', ipAddress = '') => {
   if (autoReleaseExpired) {
-    await checkAndReleaseExpiredReservations(plotId);
+    await checkAndReleaseExpiredReservations(plotId, operatorId, operatorName, ipAddress);
   }
 
   const plot = await get('SELECT id, status FROM plots WHERE id = ?', [plotId]);
@@ -161,12 +161,18 @@ const releasePlotReservation = async (plotId, contractId) => {
   );
 };
 
-const checkAndReleaseExpiredReservations = async (plotId) => {
+const checkAndReleaseExpiredReservations = async (plotId, operatorId = null, operatorName = '系统', ipAddress = '') => {
   const now = moment().format('YYYY-MM-DD HH:mm:ss');
   const expired = await all(`
-    SELECT r.id, r.contract_id, r.plot_id
+    SELECT 
+      r.id as reservation_id,
+      r.contract_id,
+      r.plot_id,
+      c.contract_no,
+      p.plot_number
     FROM plot_reservations r
     INNER JOIN contracts c ON r.contract_id = c.id
+    INNER JOIN plots p ON r.plot_id = p.id
     WHERE r.plot_id = ? 
       AND r.status = 'active' 
       AND c.status = 'reserved'
@@ -174,20 +180,14 @@ const checkAndReleaseExpiredReservations = async (plotId) => {
   `, [plotId, now]);
 
   for (const r of expired) {
-    await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
-    await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL WHERE id = ?", [r.contract_id]);
-    
-    const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
-    const hasOtherActive = await get(`
-      SELECT COUNT(*) as count 
-      FROM plot_reservations r
-      INNER JOIN contracts c ON r.contract_id = c.id
-      WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided'
-    `, [r.plot_id]);
-    
-    if (hasOtherActive.count === 0 && plot.status === PLOT_STATUSES.RESERVED) {
-      await updatePlotStatus(r.plot_id, PLOT_STATUSES.AVAILABLE);
-    }
+    const reservation = {
+      id: r.reservation_id,
+      contract_id: r.contract_id,
+      plot_id: r.plot_id,
+      contract_no: r.contract_no,
+      plot_number: r.plot_number
+    };
+    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress);
   }
 };
 
@@ -391,7 +391,7 @@ const scanAndReleaseExpiredReservations = async (operatorId, operatorName, ipAdd
   return results;
 };
 
-const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true) => {
+const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = null, excludeDeceasedId = null, autoReleaseExpired = true, operatorId = null, operatorName = '系统', ipAddress = '') => {
   await run('BEGIN IMMEDIATE');
   
   try {
@@ -401,7 +401,7 @@ const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = nu
       return { available: false, reason: '墓位不存在' };
     }
     
-    const availability = await checkPlotAvailability(plotId, excludeContractId, excludeDeceasedId, autoReleaseExpired);
+    const availability = await checkPlotAvailability(plotId, excludeContractId, excludeDeceasedId, autoReleaseExpired, operatorId, operatorName, ipAddress);
     return { ...availability, _locked: true };
   } catch (err) {
     await run('ROLLBACK');
@@ -412,13 +412,16 @@ const checkPlotAvailabilityInTransaction = async (plotId, excludeContractId = nu
 router.get('/check-plot-availability', authenticate, async (req, res) => {
   try {
     const { plot_id } = req.query;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
     
     if (!plot_id) {
       return error(res, '请提供墓位ID', 400);
     }
 
-    await checkAndReleaseExpiredReservations(plot_id);
-    const result = await checkPlotAvailability(plot_id);
+    await checkAndReleaseExpiredReservations(plot_id, operatorId, operatorName, ipAddress);
+    const result = await checkPlotAvailability(plot_id, null, null, true, operatorId, operatorName, ipAddress);
     
     success(res, result);
   } catch (err) {
@@ -451,10 +454,9 @@ router.get('/expired-reservations', authenticate, async (req, res) => {
       WHERE r.status = 'active'
         AND c.status = 'reserved'
         AND r.expires_at < ?
-      ORDER BY r.expires_at ASC
     `;
     
-    const result = await paginateQuery(baseSql, [now], page, pageSize);
+    const result = await paginateQuery(baseSql, [now], page, pageSize, 'r.expires_at ASC');
     
     const dataWithExpiryInfo = result.data.map(item => {
       const expiresAt = moment(item.expires_at);
@@ -532,36 +534,32 @@ router.post('/release-expired-reservation/:id', authenticate, idParamValidation,
   }
 });
 
-const autoReleaseExpiredReservations = async () => {
+const autoReleaseExpiredReservations = async (operatorId = null, operatorName = '系统', ipAddress = '') => {
   const now = moment().format('YYYY-MM-DD HH:mm:ss');
   const expired = await all(`
-    SELECT r.id, r.contract_id, r.plot_id
+    SELECT 
+      r.id as reservation_id,
+      r.contract_id,
+      r.plot_id,
+      c.contract_no,
+      p.plot_number
     FROM plot_reservations r
     INNER JOIN contracts c ON r.contract_id = c.id
+    INNER JOIN plots p ON r.plot_id = p.id
     WHERE r.status = 'active'
       AND c.status = 'reserved'
       AND r.expires_at < ?
   `, [now]);
 
   for (const r of expired) {
-    const contract = await get('SELECT id, contract_no, status FROM contracts WHERE id = ?', [r.contract_id]);
-    
-    if (contract && contract.status === CONTRACT_STATUSES.RESERVED) {
-      await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
-      await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [r.contract_id]);
-      
-      const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
-      const hasOtherActive = await get(`
-        SELECT COUNT(*) as count 
-        FROM plot_reservations r
-        INNER JOIN contracts c ON r.contract_id = c.id
-        WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
-      `, [r.plot_id, r.contract_id]);
-      
-      if (hasOtherActive.count === 0 && plot.status === PLOT_STATUSES.RESERVED) {
-        await updatePlotStatus(r.plot_id, PLOT_STATUSES.AVAILABLE);
-      }
-    }
+    const reservation = {
+      id: r.reservation_id,
+      contract_id: r.contract_id,
+      plot_id: r.plot_id,
+      contract_no: r.contract_no,
+      plot_number: r.plot_number
+    };
+    await releaseSingleExpiredReservation(reservation, operatorId, operatorName, ipAddress);
   }
 };
 
@@ -572,9 +570,12 @@ router.get('/', authenticate, contractQueryValidation, async (req, res) => {
       contact_id = '', keyword = '', start_date = '', end_date = '',
       expiring_within_days = '', auto_release = 'true'
     } = req.query;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
 
     if (auto_release === 'true') {
-      await autoReleaseExpiredReservations();
+      await autoReleaseExpiredReservations(operatorId, operatorName, ipAddress);
     }
 
     let baseSql = `
@@ -855,8 +856,11 @@ router.post('/', authenticate, contractCreateValidation, async (req, res) => {
       plot_price, management_fee, management_fee_years, 
       remark 
     } = req.body;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
 
-    const availability = await checkPlotAvailability(plot_id);
+    const availability = await checkPlotAvailability(plot_id, null, null, true, operatorId, operatorName, ipAddress);
     if (!availability.available) {
       return error(res, availability.reason, 400);
     }
@@ -964,11 +968,14 @@ router.post('/reserve', authenticate, contractReserveValidation, async (req, res
       plot_id, contact_name, contact_phone, reserve_days = 7,
       plot_price, management_fee, management_fee_years
     } = req.body;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
 
-    await checkAndReleaseExpiredReservations(plot_id);
+    await checkAndReleaseExpiredReservations(plot_id, operatorId, operatorName, ipAddress);
 
     const result = await runInTransaction(async () => {
-      const lockCheck = await checkPlotAvailability(plot_id);
+      const lockCheck = await checkPlotAvailability(plot_id, null, null, true, operatorId, operatorName, ipAddress);
       if (!lockCheck.available) {
         throw new Error(lockCheck.reason);
       }
@@ -1094,12 +1101,14 @@ router.post('/:id/sign', authenticate, idParamValidation, contractSignValidation
       plot_price, management_fee, management_fee_years,
       fee_items = []
     } = req.body;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
 
     const existing = await get('SELECT * FROM contracts WHERE id = ?', [id]);
     if (!existing) {
       return error(res, '合同不存在', 404);
     }
-
     if (existing.status === CONTRACT_STATUSES.EFFECTIVE || existing.status === CONTRACT_STATUSES.VOIDED) {
       return error(res, '已生效或已作废的合同不能签约', 400);
     }
@@ -1115,7 +1124,7 @@ router.post('/:id/sign', authenticate, idParamValidation, contractSignValidation
     }
 
     const result = await runInTransaction(async () => {
-      const availability = await checkPlotAvailability(existing.plot_id, id, deceased_id);
+      const availability = await checkPlotAvailability(existing.plot_id, id, deceased_id, true, operatorId, operatorName, ipAddress);
       if (!availability.available) {
         throw new Error(availability.reason);
       }
@@ -1214,6 +1223,9 @@ router.post('/:id/pay', authenticate, idParamValidation, contractPayValidation, 
   try {
     const { id } = req.params;
     const { amount, payment_method, fee_category, payment_date, remark } = req.body;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
 
     const existing = await get(`
       SELECT c.*, p.plot_number 
@@ -1258,7 +1270,7 @@ router.post('/:id/pay', authenticate, idParamValidation, contractPayValidation, 
       let becameEffective = false;
       let effectiveAt = null;
       if (newPaidAmount >= existing.total_amount && existing.status !== CONTRACT_STATUSES.EFFECTIVE) {
-        const finalCheck = await checkPlotAvailability(existing.plot_id, id, existing.deceased_id);
+        const finalCheck = await checkPlotAvailability(existing.plot_id, id, existing.deceased_id, true, operatorId, operatorName, ipAddress);
         if (!finalCheck.available) {
           throw new Error(`合同无法生效：${finalCheck.reason}`);
         }
@@ -1485,3 +1497,11 @@ router.delete('/:id', authenticate, idParamValidation, async (req, res) => {
 });
 
 module.exports = router;
+
+module.exports.checkAndReleaseExpiredReservations = checkAndReleaseExpiredReservations;
+module.exports.autoReleaseExpiredReservations = autoReleaseExpiredReservations;
+module.exports.checkPlotAvailability = checkPlotAvailability;
+module.exports.releaseSingleExpiredReservation = releaseSingleExpiredReservation;
+module.exports.validateReservationForRelease = validateReservationForRelease;
+module.exports.logStatusChangeWithOperator = logStatusChangeWithOperator;
+module.exports.logOperationWithOperator = logOperationWithOperator;

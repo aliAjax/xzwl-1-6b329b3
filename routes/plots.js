@@ -6,74 +6,19 @@ const { authenticate } = require('../middleware/auth');
 const { plotCreateValidation, idParamValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 const { createAuditSnapshot, AUDITED_RESOURCE_TYPES } = require('../utils/audit');
+const { checkAndReleaseExpiredReservations, autoReleaseExpiredReservations } = require('./contracts');
 
 const router = express.Router();
-
-const checkAndReleaseExpiredReservations = async (plotId) => {
-  const now = moment().format('YYYY-MM-DD HH:mm:ss');
-  const expired = await all(`
-    SELECT r.id, r.contract_id, r.plot_id
-    FROM plot_reservations r
-    INNER JOIN contracts c ON r.contract_id = c.id
-    WHERE r.plot_id = ? 
-      AND r.status = 'active' 
-      AND c.status = 'reserved'
-      AND r.expires_at < ?
-  `, [plotId, now]);
-
-  for (const r of expired) {
-    await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
-    await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL WHERE id = ?", [r.contract_id]);
-    
-    const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
-    const hasOtherActive = await get(`
-      SELECT COUNT(*) as count 
-      FROM plot_reservations r
-      INNER JOIN contracts c ON r.contract_id = c.id
-      WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
-    `, [r.plot_id, r.contract_id]);
-    
-    if (hasOtherActive.count === 0 && plot.status === '预留中') {
-      await run('UPDATE plots SET status = ? WHERE id = ?', ['空闲', r.plot_id]);
-    }
-  }
-};
-
-const checkAndReleaseAllExpiredReservations = async () => {
-  const now = moment().format('YYYY-MM-DD HH:mm:ss');
-  const expired = await all(`
-    SELECT r.id, r.contract_id, r.plot_id
-    FROM plot_reservations r
-    INNER JOIN contracts c ON r.contract_id = c.id
-    WHERE r.status = 'active'
-      AND c.status = 'reserved'
-      AND r.expires_at < ?
-  `, [now]);
-
-  for (const r of expired) {
-    await run("UPDATE plot_reservations SET status = 'expired' WHERE id = ?", [r.id]);
-    await run("UPDATE contracts SET status = 'draft', reserved_at = NULL, reserved_expires_at = NULL WHERE id = ?", [r.contract_id]);
-    
-    const plot = await get('SELECT id, status FROM plots WHERE id = ?', [r.plot_id]);
-    const hasOtherActive = await get(`
-      SELECT COUNT(*) as count 
-      FROM plot_reservations r
-      INNER JOIN contracts c ON r.contract_id = c.id
-      WHERE r.plot_id = ? AND r.status = 'active' AND c.status != 'voided' AND c.id != ?
-    `, [r.plot_id, r.contract_id]);
-    
-    if (hasOtherActive.count === 0 && plot.status === '预留中') {
-      await run('UPDATE plots SET status = ? WHERE id = ?', ['空闲', r.plot_id]);
-    }
-  }
-};
 
 router.get('/', authenticate, async (req, res) => {
   try {
     const { page = 1, pageSize = 10, area = '', status = '', keyword = '', auto_release = 'true' } = req.query;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
     
     if (auto_release === 'true') {
-      await checkAndReleaseAllExpiredReservations();
+      await autoReleaseExpiredReservations(operatorId, operatorName, ipAddress);
     }
     
     let baseSql = `
@@ -122,9 +67,12 @@ router.get('/area/:area/occupancy', authenticate, async (req, res) => {
   try {
     const { area } = req.params;
     const { auto_release = 'true' } = req.query;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
     
     if (auto_release === 'true') {
-      await checkAndReleaseAllExpiredReservations();
+      await autoReleaseExpiredReservations(operatorId, operatorName, ipAddress);
     }
     
     const areaExists = await get('SELECT COUNT(*) as count FROM plots WHERE area = ?', [area]);
@@ -183,9 +131,12 @@ router.get('/area/:area/occupancy', authenticate, async (req, res) => {
 router.get('/statistics', authenticate, async (req, res) => {
   try {
     const { auto_release = 'true' } = req.query;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
     
     if (auto_release === 'true') {
-      await checkAndReleaseAllExpiredReservations();
+      await autoReleaseExpiredReservations(operatorId, operatorName, ipAddress);
     }
     
     const stats = await get(`
@@ -229,9 +180,12 @@ router.get('/statistics', authenticate, async (req, res) => {
 router.get('/:id', authenticate, idParamValidation, async (req, res) => {
   try {
     const { auto_release = 'true' } = req.query;
+    const operatorId = req.user?.id;
+    const operatorName = req.user?.name || '系统';
+    const ipAddress = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.ip || '';
     
     if (auto_release === 'true') {
-      await checkAndReleaseExpiredReservations(req.params.id);
+      await checkAndReleaseExpiredReservations(req.params.id, operatorId, operatorName, ipAddress);
     }
     
     const plot = await get(`
