@@ -119,6 +119,58 @@ def test_get_batch_detail(token, batch_id):
     assert response.status_code == 200
     print('✓ 批次详情查询成功')
 
+def test_get_batch_detail_enhanced(token, batch_id):
+    print(f'\n=== 测试批次详情增强字段 (ID: {batch_id}) ===')
+    response = requests.get(f'{BASE_URL}/bills/batches/{batch_id}', headers=headers(token))
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    assert response.status_code == 200
+    
+    assert 'success_bills' in data['data']
+    assert 'skip_items' in data['data']
+    assert 'error_items' in data['data']
+    assert 'unresolved_error_items' in data['data']
+    assert 'resolved_error_items' in data['data']
+    assert 'summary' in data['data']
+    
+    summary = data['data']['summary']
+    print(f'汇总信息: {json.dumps(summary, ensure_ascii=False, indent=2)}')
+    
+    assert 'total_amount' in summary
+    assert 'success_amount' in summary
+    assert 'skip_amount' in summary
+    assert 'error_amount' in summary
+    assert 'resolved_amount' in summary
+    assert 'unresolved_error_count' in summary
+    assert 'resolved_error_count' in summary
+    
+    print(f'总金额: {summary["total_amount"]}')
+    print(f'成功金额: {summary["success_amount"]}')
+    print(f'跳过金额: {summary["skip_amount"]}')
+    print(f'待解决异常金额: {summary["error_amount"]}')
+    print(f'已解决异常金额: {summary["resolved_amount"]}')
+    
+    print('✓ 批次详情增强字段验证成功')
+
+def test_retry_exceptions(token, batch_id):
+    print(f'\n=== 测试重试异常项 (ID: {batch_id}) ===')
+    response = requests.post(f'{BASE_URL}/bills/batches/{batch_id}/retry', headers=headers(token), json={
+        'remark': '重试异常账单'
+    })
+    print(f'状态码: {response.status_code}')
+    data = response.json()
+    print(f'响应: {json.dumps(data, ensure_ascii=False, indent=2)}')
+    assert response.status_code == 200
+    
+    assert 'total_retry_count' in data['data']
+    assert 'retry_success_count' in data['data']
+    assert 'retry_error_count' in data['data']
+    
+    print(f'重试总数: {data["data"]["total_retry_count"]}')
+    print(f'重试成功: {data["data"]["retry_success_count"]}')
+    print(f'重试失败: {data["data"]["retry_error_count"]}')
+    print('✓ 重试异常项接口正常')
+
 def test_existing_payments(token):
     print('\n=== 验证现有缴费接口兼容性 ===')
     response = requests.get(f'{BASE_URL}/payments', headers=headers(token))
@@ -210,6 +262,8 @@ if __name__ == '__main__':
         
         test_get_batches(token)
         test_get_batch_detail(token, batch_id)
+        test_get_batch_detail_enhanced(token, batch_id)
+        test_retry_exceptions(token, batch_id)
         
         test_existing_payments(token)
         test_existing_reminders(token)

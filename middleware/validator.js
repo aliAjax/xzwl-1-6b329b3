@@ -151,6 +151,12 @@ const billConfigUpdateValidation = [
   validate
 ];
 
+const billBatchRetryValidation = [
+  param('id').isInt().withMessage('批次ID无效'),
+  body('remark').optional({ checkFalsy: true }).isString().withMessage('备注必须是字符串'),
+  validate
+];
+
 const reminderGenerateValidation = [
   body('reminder_days').optional({ checkFalsy: true }).isInt({ min: 1, max: 365 }).withMessage('提醒天数无效，范围1-365'),
   body('area').optional({ checkFalsy: true }).notEmpty().withMessage('区域不能为空'),
@@ -415,6 +421,7 @@ module.exports = {
   billGenerateValidation,
   billBatchQueryValidation,
   billConfigUpdateValidation,
+  billBatchRetryValidation,
   reminderGenerateValidation,
   reminderBatchQueryValidation,
   reminderDetailQueryValidation,

@@ -778,6 +778,46 @@ const migrateDatabase = async ({ exitOnComplete = false, log = console.log } = {
       log('reminder_details.failure_reason 字段已存在，跳过');
     }
 
+    const hasRetryCount = await checkColumn('bill_batch_exceptions', 'retry_count');
+    const hasLastRetriedAt = await checkColumn('bill_batch_exceptions', 'last_retried_at');
+    const hasResolved = await checkColumn('bill_batch_exceptions', 'resolved');
+
+    if (!hasRetryCount) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE bill_batch_exceptions ADD COLUMN retry_count INTEGER DEFAULT 0`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 bill_batch_exceptions.retry_count 字段');
+    } else {
+      log('bill_batch_exceptions.retry_count 字段已存在，跳过');
+    }
+
+    if (!hasLastRetriedAt) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE bill_batch_exceptions ADD COLUMN last_retried_at DATETIME`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 bill_batch_exceptions.last_retried_at 字段');
+    } else {
+      log('bill_batch_exceptions.last_retried_at 字段已存在，跳过');
+    }
+
+    if (!hasResolved) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE bill_batch_exceptions ADD COLUMN resolved INTEGER DEFAULT 0`, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      log('已添加 bill_batch_exceptions.resolved 字段');
+    } else {
+      log('bill_batch_exceptions.resolved 字段已存在，跳过');
+    }
+
     log('');
     log('数据库迁移完成！');
     if (exitOnComplete) {

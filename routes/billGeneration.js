@@ -3,7 +3,7 @@ const moment = require('moment');
 const { run, get, all, paginateQuery } = require('../utils/dbHelper');
 const { success, error, paginate } = require('../utils/response');
 const { authenticate } = require('../middleware/auth');
-const { billPreviewValidation, billGenerateValidation, billBatchQueryValidation, idParamValidation, billConfigUpdateValidation } = require('../middleware/validator');
+const { billPreviewValidation, billGenerateValidation, billBatchQueryValidation, idParamValidation, billConfigUpdateValidation, billBatchRetryValidation } = require('../middleware/validator');
 const { RESOURCE_TYPES, ACTIONS, logOperation, generateSummary } = require('../utils/operationLog');
 
 const router = express.Router();
@@ -351,7 +351,7 @@ router.get('/batches/:id', authenticate, idParamValidation, async (req, res) => 
       return error(res, '批次不存在', 404);
     }
 
-    const generatedBills = await all(`
+    const successBills = await all(`
       SELECT py.*,
              p.plot_number,
              p.area,
@@ -366,17 +366,200 @@ router.get('/batches/:id', authenticate, idParamValidation, async (req, res) => 
       ORDER BY py.id DESC
     `, [id]);
 
-    const exceptions = await all(`
-      SELECT * FROM bill_batch_exceptions 
-      WHERE batch_id = ? 
-      ORDER BY id ASC
+    const allExceptions = await all(`
+      SELECT be.*,
+             p.area
+      FROM bill_batch_exceptions be
+      LEFT JOIN plots p ON be.plot_id = p.id
+      WHERE be.batch_id = ? 
+      ORDER BY be.id ASC
     `, [id]);
+
+    const skipItems = allExceptions.filter(e => e.error_type === ERROR_TYPES.DUPLICATE_BILL);
+    const errorItems = allExceptions.filter(e => e.error_type !== ERROR_TYPES.DUPLICATE_BILL);
+    const resolvedItems = errorItems.filter(e => e.resolved === 1);
+    const unresolvedItems = errorItems.filter(e => e.resolved === 0);
+
+    const successAmount = successBills.reduce((sum, bill) => sum + (bill.amount || 0), 0);
+    const skipAmount = skipItems.length * batch.fee_standard;
+    const errorAmount = unresolvedItems.length * batch.fee_standard;
+    const resolvedAmount = resolvedItems.length * batch.fee_standard;
+    const totalAmount = successAmount + skipAmount + resolvedAmount + errorAmount;
 
     success(res, {
       batch,
-      generated_bills: generatedBills,
-      exceptions
+      success_bills: successBills,
+      skip_items: skipItems,
+      error_items: errorItems,
+      unresolved_error_items: unresolvedItems,
+      resolved_error_items: resolvedItems,
+      generated_bills: successBills,
+      exceptions: allExceptions,
+      summary: {
+        total_count: batch.total_count,
+        success_count: successBills.length,
+        skip_count: skipItems.length,
+        error_count: errorItems.length,
+        unresolved_error_count: unresolvedItems.length,
+        resolved_error_count: resolvedItems.length,
+        total_amount: totalAmount,
+        success_amount: successAmount,
+        skip_amount: skipAmount,
+        error_amount: errorAmount,
+        resolved_amount: resolvedAmount,
+        fee_standard: batch.fee_standard
+      }
     }, '批次详情查询成功');
+  } catch (err) {
+    error(res, err.message, 500);
+  }
+});
+
+router.post('/batches/:id/retry', authenticate, billBatchRetryValidation, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { remark } = req.body;
+
+    const batch = await get('SELECT * FROM bill_batches WHERE id = ?', [id]);
+    if (!batch) {
+      return error(res, '批次不存在', 404);
+    }
+
+    if (batch.status !== 'completed') {
+      return error(res, '批次尚未完成，无法重试', 400);
+    }
+
+    const errorExceptions = await all(`
+      SELECT be.*,
+             p.area,
+             p.plot_number,
+             p.status as plot_status
+      FROM bill_batch_exceptions be
+      LEFT JOIN plots p ON be.plot_id = p.id
+      WHERE be.batch_id = ? 
+        AND be.error_type != ?
+        AND be.resolved = 0
+      ORDER BY be.id ASC
+    `, [id, ERROR_TYPES.DUPLICATE_BILL]);
+
+    if (errorExceptions.length === 0) {
+      return success(res, {
+        batch_id: id,
+        batch_no: batch.batch_no,
+        retry_count: 0,
+        success_count: 0,
+        error_count: 0,
+        message: '没有需要重试的异常项'
+      }, '无异常项需要重试');
+    }
+
+    const { bill_year, fee_standard } = batch;
+    let retrySuccessCount = 0;
+    let retryErrorCount = 0;
+
+    for (const exception of errorExceptions) {
+      try {
+        const plot = await get(`
+          SELECT DISTINCT p.*, 
+                 c.id as contact_id,
+                 c.name as contact_name,
+                 c.phone as contact_phone,
+                 d.name as deceased_name
+          FROM plots p
+          LEFT JOIN deceased d ON p.id = d.plot_id
+          LEFT JOIN contacts c ON d.id = c.deceased_id
+          WHERE p.id = ?
+        `, [exception.plot_id]);
+
+        if (!plot) {
+          await run(
+            'UPDATE bill_batch_exceptions SET retry_count = retry_count + 1, last_retried_at = CURRENT_TIMESTAMP, error_message = ? WHERE id = ?',
+            [`重试失败: 墓位不存在`, exception.id]
+          );
+          retryErrorCount++;
+          continue;
+        }
+
+        const result = await processPlotForBill(plot, bill_year, fee_standard);
+
+        if (result.error_type) {
+          await run(
+            'UPDATE bill_batch_exceptions SET retry_count = retry_count + 1, last_retried_at = CURRENT_TIMESTAMP, error_type = ?, error_message = ? WHERE id = ?',
+            [result.error_type, result.error_message, exception.id]
+          );
+          if (result.error_type === ERROR_TYPES.DUPLICATE_BILL) {
+            await run(
+              'UPDATE bill_batches SET skip_count = skip_count + 1, error_count = error_count - 1 WHERE id = ?',
+              [id]
+            );
+          }
+          retryErrorCount++;
+          continue;
+        }
+
+        await run(
+          `INSERT INTO payments (plot_id, contact_id, amount, start_date, due_date, status, remark, bill_type, bill_year, bill_batch_id) 
+           VALUES (?, ?, ?, ?, ?, '未缴', ?, 'system', ?, ?)`,
+          [
+            result.plot_id,
+            result.contact_id,
+            result.amount,
+            result.start_date,
+            result.due_date,
+            `${bill_year}年度管理费（重试生成）`,
+            bill_year,
+            id
+          ]
+        );
+
+        await run(
+          'UPDATE bill_batch_exceptions SET retry_count = retry_count + 1, last_retried_at = CURRENT_TIMESTAMP, resolved = 1 WHERE id = ?',
+          [exception.id]
+        );
+
+        await run(
+          'UPDATE bill_batches SET success_count = success_count + 1, error_count = error_count - 1 WHERE id = ?',
+          [id]
+        );
+
+        retrySuccessCount++;
+      } catch (err) {
+        retryErrorCount++;
+        await run(
+          'UPDATE bill_batch_exceptions SET retry_count = retry_count + 1, last_retried_at = CURRENT_TIMESTAMP, error_type = ?, error_message = ? WHERE id = ?',
+          [ERROR_TYPES.OTHER, `重试失败: ${err.message}`, exception.id]
+        );
+      }
+    }
+
+    const updatedBatch = await get('SELECT * FROM bill_batches WHERE id = ?', [id]);
+
+    const retrySummary = {
+      batch_no: batch.batch_no,
+      bill_year,
+      fee_standard,
+      total_retry_count: errorExceptions.length,
+      retry_success_count: retrySuccessCount,
+      retry_error_count: retryErrorCount,
+      success_count: updatedBatch.success_count,
+      skip_count: updatedBatch.skip_count,
+      error_count: updatedBatch.error_count
+    };
+    const summary = generateSummary(RESOURCE_TYPES.BILL_BATCH, ACTIONS.UPDATE, retrySummary);
+    await logOperation(req, RESOURCE_TYPES.BILL_BATCH, id, ACTIONS.UPDATE, summary);
+
+    success(res, {
+      batch_id: id,
+      batch_no: batch.batch_no,
+      bill_year,
+      fee_standard,
+      total_retry_count: errorExceptions.length,
+      retry_success_count: retrySuccessCount,
+      retry_error_count: retryErrorCount,
+      success_count: updatedBatch.success_count,
+      skip_count: updatedBatch.skip_count,
+      error_count: updatedBatch.error_count
+    }, '异常项重试完成');
   } catch (err) {
     error(res, err.message, 500);
   }
@@ -438,6 +621,13 @@ router.get('/batches/:id/export', authenticate, idParamValidation, async (req, r
 
     for (const exc of exceptions) {
       const isSkip = exc.error_type === ERROR_TYPES.DUPLICATE_BILL;
+      const isResolved = exc.resolved === 1;
+      let recordType = '异常';
+      if (isSkip) {
+        recordType = '跳过';
+      } else if (isResolved) {
+        recordType = '已重试成功';
+      }
       exportList.push({
         '序号': index++,
         '墓位编号': exc.plot_number || '',
@@ -448,10 +638,13 @@ router.get('/batches/:id/export', authenticate, idParamValidation, async (req, r
         '账单年度': batch.bill_year || '',
         '起始日期': '',
         '截止日期': '',
-        '应缴金额': 0,
-        '记录类型': isSkip ? '跳过' : '异常',
+        '应缴金额': isResolved ? batch.fee_standard : 0,
+        '记录类型': recordType,
         '跳过原因': isSkip ? exc.error_message : '',
-        '异常原因': isSkip ? '' : exc.error_message
+        '异常原因': isSkip ? '' : exc.error_message,
+        '重试次数': exc.retry_count || 0,
+        '最后重试时间': exc.last_retried_at || '',
+        '是否已解决': isResolved ? '是' : '否'
       });
     }
 

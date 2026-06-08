@@ -171,6 +171,9 @@ const createTables = () => {
         plot_number TEXT,
         error_type TEXT NOT NULL,
         error_message TEXT NOT NULL,
+        retry_count INTEGER DEFAULT 0,
+        last_retried_at DATETIME,
+        resolved INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (batch_id) REFERENCES bill_batches(id)
       )`);
